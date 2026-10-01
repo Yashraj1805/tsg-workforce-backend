@@ -165,4 +165,10 @@ async function checkRegistrationPhoto(photoDataUrl) {
   );
 }
 
-module.exports = { compareFaces, detectFace, readPanCard, findMatchingFace, checkRegistrationPhoto, isConfigured };
+// Text-only Gemini call (no images) — the AI assistant (services/aiAssistant.js) uses
+// this for both routing a question to a report and writing the natural-language answer.
+async function ask(promptText, schema, timeoutMs) {
+  return callGemini(promptText, [], schema, timeoutMs);
+}
+
+module.exports = { compareFaces, detectFace, readPanCard, findMatchingFace, checkRegistrationPhoto, ask, isConfigured };
