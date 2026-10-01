@@ -167,6 +167,8 @@ db.exec('CREATE TABLE IF NOT EXISTS worker_events (id TEXT PRIMARY KEY, worker_i
 addColumnIfMissing('punches', 'vendor_id', 'TEXT');
 addColumnIfMissing('punches', 'location_id', 'TEXT');
 addColumnIfMissing('punches', 'offline', 'INTEGER NOT NULL DEFAULT 0'); // R19: captured offline, synced later
+addColumnIfMissing('punches', 'client_id', 'TEXT'); // R19: phone-side id, so a retried upload isn't saved twice
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS punches_client_id ON punches(client_id) WHERE client_id IS NOT NULL');
 db.exec('CREATE TABLE IF NOT EXISTS vendor_invoices (id TEXT PRIMARY KEY, vendor_id TEXT NOT NULL REFERENCES vendors(id), month TEXT NOT NULL, invoice_days REAL NOT NULL, invoice_ref TEXT, amount REAL, entered_by TEXT NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (vendor_id, month))');
 db.exec('CREATE TABLE IF NOT EXISTS attendance_locks (month TEXT PRIMARY KEY, locked_by TEXT NOT NULL, locked_at INTEGER NOT NULL)');
 // R17/R18: server-side login sessions (logout + admin 15-minute idle timeout).

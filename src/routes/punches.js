@@ -16,6 +16,7 @@ const router = express.Router();
 const TELEPORT_MIN_M = 2000;      // only judge speed over a real distance
 const TELEPORT_MAX_KMH = 250;     // faster than any road travel between two punches
 const TELEPORT_WINDOW_MS = 6 * 3600000;
+const TELEPORT_MAX_ACCURACY_M = 100; // fixes vaguer than this aren't used for the jump check
 
 // ---- Every punch check, in one place. Runs server-side against server-held data (BRD:
 // "A punch is saved only if location, face and phone pass the server checks" / "Server
@@ -25,8 +26,8 @@ const TELEPORT_WINDOW_MS = 6 * 3600000;
 async function evaluatePunch(w, input, ts, opts = {}) {
   const { type, lat, lng, accuracy, selfieDataUrl, deviceId, integrity } = input;
   const block = (reason, status, error, note, distanceM) => {
-    logBlocked(w, type, lat, lng, accuracy, distanceM == null ? null : distanceM, selfieDataUrl, deviceId, reason, note, ts, opts.offline);
-    return { ok: false, status, body: { error, blocked: true, reason, distanceM, accuracy } };
+    const punchId = logBlocked(w, type, lat, lng, accuracy, distanceM == null ? null : distanceM, selfieDataUrl, deviceId, reason, note, ts, opts.offline);
+    return { ok: false, status, body: { error, blocked: true, reason, distanceM, accuracy }, punchId };
   };
 
   // Device binding (R03: one phone per worker; change needs HR approval).
@@ -43,9 +44,11 @@ async function evaluatePunch(w, input, ts, opts = {}) {
     return block('fake_gps', 422, 'A fake-location app is active on this phone — turn it off and punch again', `phone reported mock location (fixes checked: ${integrity.fixesChecked ?? '?'})`, distanceM);
   }
   // Fake GPS: impossible travel since this worker's previous punch attempt.
-  const prev = db.prepare('SELECT ts, lat, lng FROM punches WHERE worker_id = ? AND lat IS NOT NULL AND ts < ? ORDER BY ts DESC LIMIT 1').get(w.id, ts);
-  if (prev && ts - prev.ts < TELEPORT_WINDOW_MS) {
-    const moved = haversineMeters(lat, lng, prev.lat, prev.lng);
+  // Only fixes that claim good accuracy are compared, and both accuracy radii are given
+  // the benefit of the doubt — one wildly wrong network fix must not look like a teleport.
+  const prev = db.prepare('SELECT ts, lat, lng, accuracy FROM punches WHERE worker_id = ? AND lat IS NOT NULL AND ts < ? AND (accuracy IS NULL OR accuracy <= ?) ORDER BY ts DESC LIMIT 1').get(w.id, ts, TELEPORT_MAX_ACCURACY_M);
+  if (prev && ts - prev.ts < TELEPORT_WINDOW_MS && (accuracy == null || accuracy <= TELEPORT_MAX_ACCURACY_M)) {
+    const moved = Math.max(0, haversineMeters(lat, lng, prev.lat, prev.lng) - (accuracy || 0) - (prev.accuracy || 0));
     const kmh = (moved / 1000) / Math.max((ts - prev.ts) / 3600000, 1 / 3600);
     if (moved > TELEPORT_MIN_M && kmh > TELEPORT_MAX_KMH) {
       return block('fake_gps', 422, 'Location jumped impossibly far since your last punch — fake GPS suspected', `moved ${Math.round(moved / 1000)} km in ${Math.round((ts - prev.ts) / 60000)} min (${Math.round(kmh)} km/h)`, distanceM);
@@ -144,6 +147,49 @@ router.post('/', requireAuth('worker'), async (req, res) => {
   res.json({ ok: true, ...r.punch });
 });
 
+// ---- Offline punch (BRD R19, §11 screen 7: "Allowed only inside the site. Send within
+// 12 hours with the original time."). The phone's wall clock can't be trusted, so the
+// original time comes from Android's elapsedRealtime (can't be changed by the user):
+//   original time = server receive time − (elapsed now − elapsed at capture)
+// That only holds on the same boot, so a punch from before a phone restart is refused
+// (Site HR raises a missed-punch request instead). Every other check — site fence, face,
+// device, fake GPS, one-in-one-out — runs exactly as for a live punch, via evaluatePunch.
+const OFFLINE_MAX_MS = 12 * 3600000;
+
+router.post('/offline', requireAuth('worker'), async (req, res) => {
+  const b = req.body || {};
+  const { clientId, capturedElapsedMs, nowElapsedMs, capturedBootCount, nowBootCount } = b;
+  if (!clientId || typeof clientId !== 'string') return res.status(400).json({ error: 'clientId is required' });
+  if (b.type !== 'in' && b.type !== 'out') return res.status(400).json({ error: 'type must be "in" or "out"' });
+  if (typeof b.lat !== 'number' || typeof b.lng !== 'number' || !b.selfieDataUrl) return res.status(400).json({ error: 'lat, lng and selfieDataUrl are required' });
+  if (req.auth.assistedBy) return res.status(403).json({ error: 'Punching is always done by the worker on their own phone' });
+
+  // Same upload again (retry after a dropped response): return what happened the first time.
+  const seen = db.prepare('SELECT id, type, ts, result, reason FROM punches WHERE client_id = ? AND worker_id = ?').get(clientId, req.auth.sub);
+  if (seen) return res.status(seen.result === 'ok' ? 200 : 422).json({ duplicate: true, ok: seen.result === 'ok', id: seen.id, type: seen.type, ts: seen.ts, reason: seen.reason });
+
+  if (typeof capturedElapsedMs !== 'number' || typeof nowElapsedMs !== 'number') {
+    return res.status(400).json({ error: 'This phone cannot prove the punch time (no device clock) — ask Site HR to raise a missed-punch request', reason: 'offline_no_clock' });
+  }
+  if (capturedBootCount != null && nowBootCount != null && capturedBootCount !== nowBootCount) {
+    return res.status(422).json({ error: 'The phone restarted after this punch, so its time cannot be proven — ask Site HR to raise a missed-punch request', reason: 'offline_rebooted' });
+  }
+  const sinceCapture = nowElapsedMs - capturedElapsedMs;
+  if (sinceCapture < 0) return res.status(422).json({ error: 'The phone restarted after this punch — ask Site HR to raise a missed-punch request', reason: 'offline_rebooted' });
+  if (sinceCapture > OFFLINE_MAX_MS) return res.status(422).json({ error: 'Offline punches must be sent within 12 hours — ask Site HR to raise a missed-punch request', reason: 'offline_expired' });
+
+  const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
+  if (!w) return res.status(404).json({ error: 'Worker not found' });
+  if (w.status !== 'approved') return res.status(403).json({ error: `Cannot punch — registration status is "${w.status}", not approved (R07)` });
+
+  const ts = Date.now() - sinceCapture;
+  const r = await evaluatePunch(w, b, ts, { offline: true });
+  const id = r.ok ? r.punch.id : r.punchId;
+  if (id) db.prepare('UPDATE punches SET client_id = ? WHERE id = ?').run(clientId, id);
+  if (!r.ok) return res.status(r.status).json(r.body);
+  res.json({ ok: true, offline: true, ...r.punch });
+});
+
 function logBlocked(w, type, lat, lng, accuracy, distanceM, selfieDataUrl, deviceId, reason, faceMatchNote, ts, offline) {
   const id = crypto.randomUUID();
   const when = ts || Date.now();
@@ -153,6 +199,7 @@ function logBlocked(w, type, lat, lng, accuracy, distanceM, selfieDataUrl, devic
   addAudit(w.id, 'punch_blocked', `${type} blocked: ${reason}`);
   // BRD §11 screen 6: "Save the attempt and alert Security."
   alertBlockedPunch(w, reason, faceMatchNote);
+  return id;
 }
 
 router.get('/me', requireAuth('worker'), (req, res) => {
