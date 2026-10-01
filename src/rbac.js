@@ -1,0 +1,85 @@
+// Role model (BRD §5 "Users and access"). One place that answers two questions for
+// every admin-portal request: "is this role allowed to do X at all" (permissions) and
+// "which workers can this person see" (scope). Routes never check role names directly —
+// they ask for a permission and apply the scope, so changing who-can-do-what is an edit
+// to this file only.
+//
+// The worker role isn't an hr_users row; workers authenticate separately (mobile OTP)
+// and only ever see their own record, so they're not part of the permission table.
+
+const ROLES = {
+  reporting_manager: 'Reporting Manager',
+  site_hr: 'Site HR',
+  central_hr: 'Central HR',
+  location_head: 'Location Head',
+  vendor_coordinator: 'Vendor Coordinator',
+  mis_finance: 'MIS / Finance',
+  security: 'Security',
+  system_admin: 'System Admin',
+};
+
+// Which scope column each role needs set on its hr_users row. A role whose scope
+// column is empty sees no workers at all (fail closed), rather than everyone.
+const ROLE_SCOPE = {
+  reporting_manager: 'manager',   // workers.reporting_manager_email = user's email
+  site_hr: 'location',            // workers.location_id = user's location_id
+  location_head: 'location',
+  vendor_coordinator: 'vendor',   // workers.vendor_id = user's vendor_id
+  central_hr: 'all',
+  mis_finance: 'all',
+  security: 'all',
+  system_admin: 'none',           // sets up masters/users; no access to worker data
+};
+
+// BRD §5, mapped onto what the API actually exposes. "Cannot do" column is enforced by
+// omission — e.g. nobody but central_hr has workers.approve, so site HR can't approve
+// their own requests, and security/MIS/location head/vendor coordinator have no write
+// permission at all.
+const PERMISSIONS = {
+  'workers.read':          ['reporting_manager', 'site_hr', 'central_hr', 'location_head', 'vendor_coordinator', 'mis_finance'],
+  'workers.approve':       ['central_hr'],             // approve / send back / reject
+  'workers.manage':        ['central_hr'],             // transfer / exit / blacklist
+  'punches.read':          ['reporting_manager', 'site_hr', 'central_hr', 'location_head', 'vendor_coordinator', 'mis_finance', 'security'],
+  'regularisations.read':  ['reporting_manager', 'site_hr', 'central_hr', 'location_head', 'mis_finance'],
+  'regularisations.raise': ['site_hr', 'central_hr'],
+  'regularisations.decide':['central_hr'],             // maker != checker still enforced on top
+  'masters.write':         ['system_admin'],
+  'users.manage':          ['system_admin'],
+  'audit.read':            ['central_hr', 'security', 'system_admin'],
+};
+
+// Security's punch access is limited to blocked attempts (BRD: "View blocked punches").
+const PUNCH_RESULT_RESTRICTION = { security: 'blocked' };
+
+function isAdminRole(role) { return Object.prototype.hasOwnProperty.call(ROLES, role); }
+
+function can(role, permission) {
+  return (PERMISSIONS[permission] || []).includes(role);
+}
+
+function permissionsFor(role) {
+  return Object.keys(PERMISSIONS).filter(p => can(role, p));
+}
+
+// SQL fragment restricting a `workers` row (aliased as `alias`) to what `user` may see.
+// `user` is the hr_users row loaded by requireAuth, not the token payload, so a scope
+// change by a system admin takes effect on the very next request.
+function workerScopeSql(user, alias = 'workers') {
+  const scope = ROLE_SCOPE[user.role];
+  if (scope === 'all') return { sql: '1=1', args: [] };
+  if (scope === 'location' && user.location_id) return { sql: `${alias}.location_id = ?`, args: [user.location_id] };
+  if (scope === 'vendor' && user.vendor_id) return { sql: `${alias}.vendor_id = ?`, args: [user.vendor_id] };
+  if (scope === 'manager' && user.email) return { sql: `lower(${alias}.reporting_manager_email) = ?`, args: [user.email.toLowerCase()] };
+  return { sql: '0=1', args: [] };
+}
+
+// Same restriction, for tables keyed by worker_id (punches, regularisations).
+function workerIdScopeSql(user, column = 'worker_id') {
+  const s = workerScopeSql(user, 'w');
+  return { sql: `${column} IN (SELECT w.id FROM workers w WHERE ${s.sql})`, args: s.args };
+}
+
+module.exports = {
+  ROLES, ROLE_SCOPE, PERMISSIONS, PUNCH_RESULT_RESTRICTION,
+  isAdminRole, can, permissionsFor, workerScopeSql, workerIdScopeSql,
+};

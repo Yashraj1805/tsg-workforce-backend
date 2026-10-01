@@ -2,7 +2,8 @@ const express = require('express');
 const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
 const { generateOtp, verifyOtp } = require('../services/otp');
-const { issueToken } = require('../middleware/auth');
+const { issueToken, requireAuth } = require('../middleware/auth');
+const { isAdminRole, permissionsFor } = require('../rbac');
 
 const router = express.Router();
 
@@ -44,25 +45,45 @@ router.post('/hr/otp/request', (req, res) => {
   res.json(result);
 });
 
+const isDev = process.env.NODE_ENV !== 'production';
+const bootstrapAdmins = (process.env.ADMIN_BOOTSTRAP_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
 router.post('/hr/otp/verify', (req, res) => {
-  const { email, otp, name } = req.body || {};
+  const { email, otp, name, devRole } = req.body || {};
   if (!email || !otp) return res.status(400).json({ error: 'email and otp are required' });
   const result = verifyOtp(email, 'hr_login', otp);
   if (!result.ok) return res.status(400).json({ error: result.error });
 
-  let hrUser = db.prepare('SELECT * FROM hr_users WHERE email = ?').get(email);
+  let hrUser = db.prepare('SELECT * FROM hr_users WHERE lower(email) = lower(?)').get(email);
   if (!hrUser) {
-    // NOTE: auto-provisioning any verified company email as HR is fine for pilot/dev
-    // testing, but production should restrict this to a pre-approved allowlist before go-live.
-    const id = crypto.randomUUID();
-    db.prepare('INSERT INTO hr_users (id, email, name, role, created_at) VALUES (?,?,?,?,?)')
-      .run(id, email, name || email.split('@')[0], 'site_hr', Date.now());
-    hrUser = db.prepare('SELECT * FROM hr_users WHERE id = ?').get(id);
-    addAudit(email, 'hr_first_login', 'New HR user auto-provisioned on first OTP login (dev mode)');
-  }
+    // Admin users are created by a System Admin (BRD §5). Two ways an unknown email gets
+    // in on its own: it's listed in ADMIN_BOOTSTRAP_EMAILS (becomes the first System
+    // Admin, so someone can create everyone else), or this is a dev server, where any
+    // verified email is auto-provisioned with the role picked on the login screen so
+    // every role can be tested without a System Admin setting each one up.
+    let role = null;
+    if (bootstrapAdmins.includes(email.toLowerCase())) role = 'system_admin';
+    else if (isDev) role = isAdminRole(devRole) ? devRole : 'central_hr';
+    if (!role) return res.status(403).json({ error: 'This email is not registered for the admin portal — ask a System Admin to add you' });
 
-  const token = issueToken({ sub: hrUser.id, role: 'hr', email, name: hrUser.name, hrRole: hrUser.role }, '2h');
-  res.json({ token, hrUser });
+    const id = crypto.randomUUID();
+    db.prepare('INSERT INTO hr_users (id, email, name, role, status, created_at) VALUES (?,?,?,?,?,?)')
+      .run(id, email, name || email.split('@')[0], role, 'active', Date.now());
+    hrUser = db.prepare('SELECT * FROM hr_users WHERE id = ?').get(id);
+    addAudit(email, 'hr_first_login', `New admin user auto-provisioned as ${role} on first OTP login (${isDev ? 'dev mode' : 'bootstrap admin'})`);
+  }
+  if (hrUser.status !== 'active') return res.status(403).json({ error: 'This admin account has been deactivated' });
+  if (!isAdminRole(hrUser.role)) return res.status(403).json({ error: `Unknown role "${hrUser.role}" — ask a System Admin to fix this account` });
+
+  const token = issueToken({ sub: hrUser.id, role: hrUser.role, email: hrUser.email, name: hrUser.name }, '2h');
+  res.json({ token, hrUser, permissions: permissionsFor(hrUser.role) });
+});
+
+// Current admin's role/permissions/scope, re-read from the database. The app calls this
+// on start-up so a role change made by a System Admin shows up without re-login.
+router.get('/me', requireAuth(), (req, res) => {
+  if (!req.user) return res.status(400).json({ error: 'Workers should use GET /api/workers/me' });
+  res.json({ hrUser: req.user, permissions: permissionsFor(req.user.role) });
 });
 
 module.exports = router;

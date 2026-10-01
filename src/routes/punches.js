@@ -1,7 +1,8 @@
 const express = require('express');
 const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
+const { workerIdScopeSql, PUNCH_RESULT_RESTRICTION } = require('../rbac');
 const { haversineMeters } = require('../services/geo');
 const gemini = require('../services/geminiClient');
 
@@ -114,14 +115,19 @@ router.get('/me', requireAuth('worker'), (req, res) => {
 });
 
 // ---- HR: attendance register / exceptions ----
-router.get('/', requireAuth('hr'), (req, res) => {
-  const { workerId, date, result } = req.query;
-  let sql = 'SELECT * FROM punches WHERE 1=1';
-  const args = [];
-  if (workerId) { sql += ' AND worker_id = ?'; args.push(workerId); }
-  if (date) { sql += " AND date(ts / 1000, 'unixepoch') = ?"; args.push(date); }
-  if (result) { sql += ' AND result = ?'; args.push(result); }
-  sql += ' ORDER BY ts DESC LIMIT 500';
+// Scoped to the caller's workers (rbac.js); Security only ever gets blocked attempts.
+// worker_name is joined in so roles without workers.read (Security) can still tell
+// whose attempt it was.
+router.get('/', requirePermission('punches.read'), (req, res) => {
+  const { workerId, date } = req.query;
+  const result = PUNCH_RESULT_RESTRICTION[req.user.role] || req.query.result;
+  const scope = workerIdScopeSql(req.user, 'punches.worker_id');
+  let sql = `SELECT punches.*, workers.name AS worker_name FROM punches LEFT JOIN workers ON workers.id = punches.worker_id WHERE ${scope.sql}`;
+  const args = [...scope.args];
+  if (workerId) { sql += ' AND punches.worker_id = ?'; args.push(workerId); }
+  if (date) { sql += " AND date(punches.ts / 1000, 'unixepoch') = ?"; args.push(date); }
+  if (result) { sql += ' AND punches.result = ?'; args.push(result); }
+  sql += ' ORDER BY punches.ts DESC LIMIT 500';
   res.json(db.prepare(sql).all(...args));
 });
 

@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -12,7 +12,7 @@ router.get('/vendors', requireAuth(), (req, res) => {
   res.json(db.prepare('SELECT * FROM vendors ORDER BY created_at DESC').all());
 });
 
-router.post('/vendors', requireAuth('hr'), (req, res) => {
+router.post('/vendors', requirePermission('masters.write'), (req, res) => {
   const { name, gstin, pan, contactPerson, phone } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name is required' });
   const id = crypto.randomUUID();
@@ -22,7 +22,7 @@ router.post('/vendors', requireAuth('hr'), (req, res) => {
   res.status(201).json(db.prepare('SELECT * FROM vendors WHERE id = ?').get(id));
 });
 
-router.put('/vendors/:id', requireAuth('hr'), (req, res) => {
+router.put('/vendors/:id', requirePermission('masters.write'), (req, res) => {
   const v = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
   if (!v) return res.status(404).json({ error: 'Not found' });
   const { name, gstin, pan, contactPerson, phone, status } = req.body || {};
@@ -37,7 +37,7 @@ router.get('/locations', requireAuth(), (req, res) => {
   res.json(db.prepare('SELECT * FROM locations ORDER BY created_at DESC').all());
 });
 
-router.post('/locations', requireAuth('hr'), (req, res) => {
+router.post('/locations', requirePermission('masters.write'), (req, res) => {
   const { name, brand, lat, lng, radius, accuracyLimit } = req.body || {};
   if (!name || typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'name, lat and lng are required' });
   const id = crypto.randomUUID();
@@ -47,7 +47,7 @@ router.post('/locations', requireAuth('hr'), (req, res) => {
   res.status(201).json(db.prepare('SELECT * FROM locations WHERE id = ?').get(id));
 });
 
-router.put('/locations/:id', requireAuth('hr'), (req, res) => {
+router.put('/locations/:id', requirePermission('masters.write'), (req, res) => {
   const l = db.prepare('SELECT * FROM locations WHERE id = ?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'Not found' });
   const { name, brand, lat, lng, radius, accuracyLimit } = req.body || {};

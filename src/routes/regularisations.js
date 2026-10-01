@@ -1,20 +1,26 @@
 const express = require('express');
 const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
+const { workerScopeSql, workerIdScopeSql } = require('../rbac');
 
 const router = express.Router();
 
 // Raised by site HR on a worker's behalf — workers cannot self-raise (BRD screen 10:
-// "Worker cannot edit. Button calls site HR" / R13).
-router.post('/', requireAuth('hr'), (req, res) => {
+// "Worker cannot edit. Button calls site HR" / R13). The worker must be inside the
+// raiser's scope, so a site HR can't raise for another site's staff.
+router.post('/', requirePermission('regularisations.raise'), (req, res) => {
   const { workerId, date, reason } = req.body || {};
   if (!workerId || !date || !reason) return res.status(400).json({ error: 'workerId, date and reason are required' });
+  const scope = workerScopeSql(req.user);
+  if (!db.prepare(`SELECT 1 FROM workers WHERE id = ? AND ${scope.sql}`).get(workerId, ...scope.args)) {
+    return res.status(404).json({ error: 'Worker not found' });
+  }
   const id = crypto.randomUUID();
   const now = Date.now();
-  db.prepare('INSERT INTO regularisations (id, worker_id, date, reason, maker, status, created_at) VALUES (?,?,?,?,?,?,?)')
-    .run(id, workerId, date, reason, req.auth.name || req.auth.email, 'pending', now);
-  addAudit(req.auth.email, 'raise_regularisation', `${date} for worker ${workerId}: ${reason}`);
+  db.prepare('INSERT INTO regularisations (id, worker_id, date, reason, maker, maker_id, status, created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id, workerId, date, reason, req.user.name || req.user.email, req.user.id, 'pending', now);
+  addAudit(req.user.email, 'raise_regularisation', `${date} for worker ${workerId}: ${reason}`);
   res.status(201).json(db.prepare('SELECT * FROM regularisations WHERE id = ?').get(id));
 });
 
@@ -24,27 +30,31 @@ router.get('/mine', requireAuth('worker'), (req, res) => {
   res.json(db.prepare('SELECT * FROM regularisations WHERE worker_id = ? ORDER BY created_at DESC').all(req.auth.sub));
 });
 
-router.get('/', requireAuth('hr'), (req, res) => {
+router.get('/', requirePermission('regularisations.read'), (req, res) => {
   const { status } = req.query;
-  const rows = status
-    ? db.prepare('SELECT * FROM regularisations WHERE status = ? ORDER BY created_at DESC').all(status)
-    : db.prepare('SELECT * FROM regularisations ORDER BY created_at DESC').all();
-  res.json(rows);
+  const scope = workerIdScopeSql(req.user);
+  let sql = `SELECT * FROM regularisations WHERE ${scope.sql}`;
+  const args = [...scope.args];
+  if (status) { sql += ' AND status = ?'; args.push(status); }
+  res.json(db.prepare(sql + ' ORDER BY created_at DESC').all(...args));
 });
 
-// Maker and checker must be different people (BR-08).
-router.post('/:id/decide', requireAuth('hr'), (req, res) => {
+// Maker and checker must be different people (BR-08). Compared by user id; rows raised
+// before maker_id existed fall back to the old display-name comparison.
+router.post('/:id/decide', requirePermission('regularisations.decide'), (req, res) => {
   const { decision } = req.body || {};
   if (decision !== 'approved' && decision !== 'rejected') return res.status(400).json({ error: 'decision must be "approved" or "rejected"' });
-  const r = db.prepare('SELECT * FROM regularisations WHERE id = ?').get(req.params.id);
+  const scope = workerIdScopeSql(req.user);
+  const r = db.prepare(`SELECT * FROM regularisations WHERE id = ? AND ${scope.sql}`).get(req.params.id, ...scope.args);
   if (!r) return res.status(404).json({ error: 'Not found' });
   if (r.status !== 'pending') return res.status(400).json({ error: `Already ${r.status}` });
-  const checker = req.auth.name || req.auth.email;
-  if (r.maker === checker) return res.status(403).json({ error: 'Maker and checker must be different people (BR-08) — log in as a different HR user' });
+  const checker = req.user.name || req.user.email;
+  const samePerson = r.maker_id ? r.maker_id === req.user.id : r.maker === checker;
+  if (samePerson) return res.status(403).json({ error: 'Maker and checker must be different people (BR-08) — log in as a different HR user' });
 
-  db.prepare('UPDATE regularisations SET status = ?, checker = ?, decided_at = ? WHERE id = ?')
-    .run(decision, checker, Date.now(), r.id);
-  addAudit(req.auth.email, 'regularisation_' + decision, `${r.date} for worker ${r.worker_id}`);
+  db.prepare('UPDATE regularisations SET status = ?, checker = ?, checker_id = ?, decided_at = ? WHERE id = ?')
+    .run(decision, checker, req.user.id, Date.now(), r.id);
+  addAudit(req.user.email, 'regularisation_' + decision, `${r.date} for worker ${r.worker_id}`);
   res.json(db.prepare('SELECT * FROM regularisations WHERE id = ?').get(r.id));
 });
 

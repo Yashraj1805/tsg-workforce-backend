@@ -130,10 +130,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 // Lightweight migration guard: CREATE TABLE IF NOT EXISTS doesn't add new columns to
 // a table that already exists on disk from an earlier run.
-const punchColumns = db.prepare("PRAGMA table_info(punches)").all().map(c => c.name);
-if (!punchColumns.includes('face_match_note')) {
-  db.exec('ALTER TABLE punches ADD COLUMN face_match_note TEXT');
+function addColumnIfMissing(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
+addColumnIfMissing('punches', 'face_match_note', 'TEXT');
+
+// Role model (see rbac.js): scope columns on admin users, the manager link on workers
+// that the reporting_manager role is scoped by, and id-based maker/checker so BR-08
+// can't be satisfied by two different people who happen to share a display name.
+addColumnIfMissing('hr_users', 'location_id', 'TEXT REFERENCES locations(id)');
+addColumnIfMissing('hr_users', 'vendor_id', 'TEXT REFERENCES vendors(id)');
+addColumnIfMissing('hr_users', 'status', "TEXT NOT NULL DEFAULT 'active'");
+addColumnIfMissing('workers', 'reporting_manager_email', 'TEXT');
+addColumnIfMissing('regularisations', 'maker_id', 'TEXT');
+addColumnIfMissing('regularisations', 'checker_id', 'TEXT');
 
 function addAudit(user, action, detail) {
   db.prepare('INSERT INTO audit_log (id, ts, user, action, detail) VALUES (?,?,?,?,?)')

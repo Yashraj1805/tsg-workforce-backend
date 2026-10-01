@@ -1,6 +1,7 @@
 const express = require('express');
 const { db, addAudit } = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
+const { workerScopeSql } = require('../rbac');
 
 const router = express.Router();
 
@@ -71,24 +72,33 @@ router.post('/me/submit', requireAuth('worker'), (req, res) => {
 });
 
 // ---- HR: review and manage workers ----
-router.get('/', requireAuth('hr'), (req, res) => {
+// Every admin read goes through the caller's scope (rbac.js) — e.g. a site HR only
+// ever sees their own location's workers, a vendor coordinator only their vendor's.
+router.get('/', requirePermission('workers.read'), (req, res) => {
   const { status } = req.query;
-  const rows = status
-    ? db.prepare('SELECT * FROM workers WHERE status = ? ORDER BY created_at DESC').all(status)
-    : db.prepare('SELECT * FROM workers ORDER BY created_at DESC').all();
-  res.json(rows);
+  const scope = workerScopeSql(req.user);
+  let sql = `SELECT * FROM workers WHERE ${scope.sql}`;
+  const args = [...scope.args];
+  if (status) { sql += ' AND status = ?'; args.push(status); }
+  res.json(db.prepare(sql + ' ORDER BY created_at DESC').all(...args));
 });
 
-router.get('/:id', requireAuth('hr'), (req, res) => {
-  const w = getWorker(req.params.id);
+// Out-of-scope workers 404 rather than 403, so the response doesn't confirm they exist.
+function getScopedWorker(user, id) {
+  const scope = workerScopeSql(user);
+  return db.prepare(`SELECT * FROM workers WHERE id = ? AND ${scope.sql}`).get(id, ...scope.args);
+}
+
+router.get('/:id', requirePermission('workers.read'), (req, res) => {
+  const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
   const location = w.location_id ? db.prepare('SELECT id, name, brand, lat, lng, radius, accuracy_limit FROM locations WHERE id = ?').get(w.location_id) : null;
   const vendor = w.vendor_id ? db.prepare('SELECT id, name, phone FROM vendors WHERE id = ?').get(w.vendor_id) : null;
   res.json({ ...w, location, vendor });
 });
 
-router.post('/:id/approve', requireAuth('hr'), (req, res) => {
-  const w = getWorker(req.params.id);
+router.post('/:id/approve', requirePermission('workers.approve'), (req, res) => {
+  const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
   if (w.status !== 'pending') return res.status(400).json({ error: `Cannot approve a worker with status "${w.status}"` });
   db.prepare("UPDATE workers SET status = 'approved', send_back_reason = NULL WHERE id = ?").run(w.id);
@@ -96,36 +106,36 @@ router.post('/:id/approve', requireAuth('hr'), (req, res) => {
   res.json(getWorker(w.id));
 });
 
-router.post('/:id/send-back', requireAuth('hr'), (req, res) => {
+router.post('/:id/send-back', requirePermission('workers.approve'), (req, res) => {
   const { reason } = req.body || {};
   if (!reason) return res.status(400).json({ error: 'reason is required' });
-  const w = getWorker(req.params.id);
+  const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
   db.prepare("UPDATE workers SET status = 'sent_back', send_back_reason = ? WHERE id = ?").run(reason, w.id);
   addAudit(req.auth.email, 'sendback_registration', `Sent back ${w.name}: ${reason}`);
   res.json(getWorker(w.id));
 });
 
-router.post('/:id/reject', requireAuth('hr'), (req, res) => {
-  const w = getWorker(req.params.id);
+router.post('/:id/reject', requirePermission('workers.approve'), (req, res) => {
+  const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
   db.prepare("UPDATE workers SET status = 'rejected' WHERE id = ?").run(w.id);
   addAudit(req.auth.email, 'reject_registration', `Rejected ${w.name}`);
   res.json(getWorker(w.id));
 });
 
-router.post('/:id/exit', requireAuth('hr'), (req, res) => {
+router.post('/:id/exit', requirePermission('workers.manage'), (req, res) => {
   const { reason, blacklist } = req.body || {};
-  const w = getWorker(req.params.id);
+  const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
   db.prepare("UPDATE workers SET status = 'exited', blacklisted = ? WHERE id = ?").run(blacklist ? 1 : 0, w.id);
   addAudit(req.auth.email, 'exit_worker', `Exited ${w.name}${blacklist ? ' (blacklisted)' : ''}: ${reason || ''}`);
   res.json(getWorker(w.id));
 });
 
-router.post('/:id/transfer', requireAuth('hr'), (req, res) => {
+router.post('/:id/transfer', requirePermission('workers.manage'), (req, res) => {
   const { locationId, vendorId } = req.body || {};
-  const w = getWorker(req.params.id);
+  const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
   db.prepare('UPDATE workers SET location_id = COALESCE(?, location_id), vendor_id = COALESCE(?, vendor_id) WHERE id = ?')
     .run(locationId || null, vendorId || null, w.id);

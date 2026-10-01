@@ -90,6 +90,35 @@ that's not the same as having actually called their sandbox.
 | Masters | `GET/POST/PUT /api/vendors`, `GET/POST/PUT /api/locations` |
 | Regularisation | `POST /api/regularisations`, `GET /api/regularisations`, `POST /api/regularisations/:id/decide` |
 | Audit | `GET /api/audit` |
+| Admin users | `GET /api/auth/me`, `GET/POST/PUT /api/admin-users`, `GET /api/admin-users/roles` |
 
 All non-auth endpoints require `Authorization: Bearer <token>` from the matching OTP
 verify call.
+
+## Roles and access (BRD §5)
+
+Admin-portal users have one of 8 roles (plus the worker app's own `worker` role). What each
+role can do, and which workers it can see, is defined in one place — `src/rbac.js` — and
+routes only ever ask for a permission (`requirePermission('workers.approve')`) and apply
+the caller's scope; they never check role names directly.
+
+| Role | Sees | Can change |
+|---|---|---|
+| Reporting Manager | own team (workers whose `reporting_manager_email` is theirs) | nothing |
+| Site HR | own location | raise missed-punch requests |
+| Central HR | all | approve/send back/reject, transfer/exit, decide missed-punch |
+| Location Head | own location | nothing |
+| Vendor Coordinator | own vendor | nothing |
+| MIS / Finance | all | nothing |
+| Security | blocked punches + audit log only | nothing |
+| System Admin | no worker data | vendors, locations, admin users |
+
+Role and scope are re-read from `hr_users` on every request, so a change or deactivation
+by a System Admin applies immediately, not when the token expires. A scoped role with
+no location/vendor assigned sees nothing (fails closed).
+
+**Getting admin users in:** a System Admin creates them (`POST /api/admin-users`). The first
+System Admin comes from `ADMIN_BOOTSTRAP_EMAILS` in `.env`. In production any other
+unknown email is refused at login. On a dev server (`NODE_ENV` not `production`), an
+unknown email is still auto-created on first login, with the role picked on the
+login screen (default Central HR), so every role can be tried out.
