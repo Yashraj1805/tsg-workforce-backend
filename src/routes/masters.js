@@ -58,6 +58,41 @@ router.put('/vendors/:id', requirePermission('masters.write'), (req, res) => {
   res.json(db.prepare('SELECT * FROM vendors WHERE id = ?').get(old.id));
 });
 
+// ---- Jobs (BRD §10 screen 8: "One choice. The list is set by admin.") ----
+router.get('/jobs', requireAuth(), (req, res) => {
+  res.json(db.prepare('SELECT * FROM jobs ORDER BY sort, name').all());
+});
+router.post('/jobs', requirePermission('masters.write'), (req, res) => {
+  const { name, nameHi, icon } = req.body || {};
+  if (!(name || '').trim()) return res.status(400).json({ error: 'name is required' });
+  const id = crypto.randomUUID();
+  const sort = (db.prepare('SELECT MAX(sort) m FROM jobs').get().m || 0) + 1;
+  db.prepare('INSERT INTO jobs (id, name, name_hi, icon, active, sort) VALUES (?,?,?,?,1,?)').run(id, name.trim(), (nameHi || '').trim() || null, (icon || '').trim() || null, sort);
+  addAudit(req.auth.email, 'add_job', name.trim());
+  res.status(201).json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
+});
+router.put('/jobs/:id', requirePermission('masters.write'), (req, res) => {
+  const j = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  if (!j) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+  const next = {
+    name: b.name !== undefined ? String(b.name).trim() : j.name,
+    name_hi: b.nameHi !== undefined ? (String(b.nameHi).trim() || null) : j.name_hi,
+    icon: b.icon !== undefined ? (String(b.icon).trim() || null) : j.icon,
+    active: b.active !== undefined ? (b.active ? 1 : 0) : j.active,
+  };
+  if (!next.name) return res.status(400).json({ error: 'name is required' });
+  db.prepare('UPDATE jobs SET name = ?, name_hi = ?, icon = ?, active = ? WHERE id = ?').run(next.name, next.name_hi, next.icon, next.active, j.id);
+  addAudit(req.auth.email, 'edit_job', `${j.name}${next.name !== j.name ? ' -> ' + next.name : ''}${next.active !== j.active ? (next.active ? ' (re-activated)' : ' (retired)') : ''}`);
+  res.json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(j.id));
+});
+
+// Everything the registration wizard offers as a choice, plus the current consent text.
+router.get('/registration-options', requireAuth(), (req, res) => {
+  const { EDUCATION, EXPERIENCE, CONSENT } = require('../registrationOptions');
+  res.json({ jobs: db.prepare('SELECT * FROM jobs WHERE active = 1 ORDER BY sort, name').all(), education: EDUCATION, experience: EXPERIENCE, consent: CONSENT });
+});
+
 // ---- Locations (BRD R02) ----
 router.get('/locations', requireAuth(), (req, res) => {
   res.json(db.prepare('SELECT * FROM locations ORDER BY created_at DESC').all());

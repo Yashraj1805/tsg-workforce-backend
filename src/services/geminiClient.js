@@ -146,4 +146,23 @@ async function findMatchingFace(probeDataUrl, candidateDataUrls) {
   );
 }
 
-module.exports = { compareFaces, detectFace, readPanCard, findMatchingFace, isConfigured };
+// BRD §10 screen 5: registration photo must show exactly one live person.
+async function checkRegistrationPhoto(photoDataUrl) {
+  return callGemini(
+    'This is the registration photo for a workplace ID system, taken live with a phone camera. It may be rotated (ignore orientation). Count the human faces clearly visible, and judge whether it is a photo of a real live person in front of the camera, as opposed to a photo of a printed picture, an ID card, or a phone/computer screen (look for screen glare, moire, bezels, paper edges, unnatural flatness).',
+    [parseDataUrl(photoDataUrl)],
+    {
+      type: 'object',
+      properties: {
+        faceCount: { type: 'integer', description: 'number of human faces clearly visible' },
+        isLivePerson: { type: 'boolean', description: 'true if this is a live person, not a photo of a photo/card/screen' },
+        confidence: { type: 'number', description: '0 to 1, confidence in this assessment' },
+        reason: { type: 'string', description: 'one short sentence' },
+      },
+      required: ['faceCount', 'isLivePerson', 'confidence', 'reason'],
+    },
+    12000
+  );
+}
+
+module.exports = { compareFaces, detectFace, readPanCard, findMatchingFace, checkRegistrationPhoto, isConfigured };

@@ -171,6 +171,26 @@ db.exec('CREATE TABLE IF NOT EXISTS attendance_locks (month TEXT PRIMARY KEY, lo
 // R17/R18: server-side login sessions (logout + admin 15-minute idle timeout).
 db.exec('CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id TEXT NOT NULL, identifier TEXT, created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, ended_at INTEGER, end_reason TEXT)');
 addColumnIfMissing('workers', 'registered_by', 'TEXT'); // Site HR email when registered on HR's phone (assisted)
+
+// BRD §10 registration screens: job list set by admin (screen 8), consent saved with
+// date/time/version (screen 4), live one-face check on the photo (screen 5), optional
+// bank passbook photo (design rule 4), and the face-check verdict approval depends on.
+db.exec(`CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, name TEXT NOT NULL, name_hi TEXT, icon TEXT, active INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0)`);
+db.exec(`CREATE TABLE IF NOT EXISTS consents (id TEXT PRIMARY KEY, worker_id TEXT NOT NULL REFERENCES workers(id), version TEXT NOT NULL, language TEXT, accepted_at INTEGER NOT NULL, device_id TEXT, assisted_by TEXT)`);
+addColumnIfMissing('workers', 'job_id', 'TEXT');
+addColumnIfMissing('workers', 'consent_version', 'TEXT');
+addColumnIfMissing('workers', 'consent_at', 'INTEGER');
+addColumnIfMissing('workers', 'photo_check_note', 'TEXT');
+addColumnIfMissing('workers', 'face_check_status', 'TEXT'); // clear | review | skipped | blocked
+addColumnIfMissing('workers', 'bank_passbook_data_url', 'TEXT');
+if (!db.prepare('SELECT 1 FROM jobs LIMIT 1').get()) {
+  // BRD §4 scope list; System Admin can rename/add/retire these.
+  const seed = [['Washing staff', 'धुलाई कर्मचारी', '🚿'], ['Driver', 'ड्राइवर', '🚗'], ['Security guard', 'सुरक्षा गार्ड', '🛡️'],
+    ['Housekeeping', 'हाउसकीपिंग', '🧹'], ['Office boy', 'ऑफिस बॉय', '☕'], ['Denter / painter', 'डेंटर / पेंटर', '🔧'],
+    ['Audit staff', 'ऑडिट स्टाफ', '📋'], ['IT staff', 'आईटी स्टाफ', '💻']];
+  const ins = db.prepare('INSERT INTO jobs (id, name, name_hi, icon, active, sort) VALUES (?,?,?,?,1,?)');
+  seed.forEach(([n, h, i], k) => ins.run(require('node:crypto').randomUUID(), n, h, i, k));
+}
 addColumnIfMissing('regularisations', 'maker_id', 'TEXT');
 addColumnIfMissing('regularisations', 'checker_id', 'TEXT');
 

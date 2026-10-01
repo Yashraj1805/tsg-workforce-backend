@@ -13,6 +13,7 @@ router.post('/worker/otp/request', (req, res) => {
   const { mobile } = req.body || {};
   if (!/^\d{10}$/.test(mobile || '')) return res.status(400).json({ error: 'Valid 10-digit mobile number required' });
   const result = generateOtp(mobile, 'worker_login');
+  if (result.error) return res.status(429).json(result); // resend wait / 15-min lock
   res.json(result);
 });
 
@@ -44,6 +45,7 @@ router.post('/hr/otp/request', (req, res) => {
   const { email } = req.body || {};
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '')) return res.status(400).json({ error: 'Valid email required' });
   const result = generateOtp(email, 'hr_login');
+  if (result.error) return res.status(429).json(result);
   res.json(result);
 });
 

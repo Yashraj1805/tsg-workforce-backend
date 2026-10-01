@@ -6,7 +6,10 @@ const { workerScopeSql } = require('../rbac');
 const setu = require('../services/setuClient');
 const time = require('../services/time');
 const { namesMatch } = require('../services/nameMatch');
-const { checkDocument, checkFace } = require('../services/identityChecks');
+const { checkDocument, checkFace, checkRegistrationPhoto } = require('../services/identityChecks');
+const { haversineMeters } = require('../services/geo');
+const { EDUCATION, EXPERIENCE, CONSENT } = require('../registrationOptions');
+const { notifyWorker } = require('../services/notify');
 
 const router = express.Router();
 
@@ -23,21 +26,23 @@ router.get('/me', requireAuth('worker'), (req, res) => {
   res.json({ ...w, location, vendor });
 });
 
-router.put('/me', requireAuth('worker'), (req, res) => {
+router.put('/me', requireAuth('worker'), async (req, res) => {
   const w = getWorker(req.auth.sub);
   if (!w) return res.status(404).json({ error: 'Worker not found' });
   if (w.status === 'approved') return res.status(400).json({ error: 'Approved profile cannot be self-edited — contact HR' });
 
+  // location_id is NOT editable here: BRD §10 screen 9 "Site is set by GPS" — see
+  // POST /me/site-from-gps (or the Site HR's site, for assisted registration).
+  // designation follows job_id (screen 8: one choice from the admin's job list).
   const fields = ['name', 'father_name', 'dob', 'gender', 'address', 'emergency_contact',
-    'vendor_id', 'vendor_code', 'location_id', 'designation', 'doj', 'qualification', 'experience', 'photo_data_url'];
+    'vendor_id', 'vendor_code', 'job_id', 'doj', 'qualification', 'experience', 'photo_data_url', 'bank_passbook_data_url'];
   const body = req.body || {};
   const updates = fields.filter(f => body[toCamel(f)] !== undefined);
+  const extra = {}; // derived columns written alongside
 
-  // vendor_id/location_id are foreign keys — an empty string from an empty <select>
-  // isn't a valid reference and must not be sent to the database as one (it would
-  // violate the foreign key constraint and crash with a raw 500). Treat '' as "not
-  // set yet" (null), and if a real id is given, confirm it actually exists so a
-  // stale/bad reference fails with a clear error instead of a database crash.
+  // vendor_id is a foreign key — an empty string from an empty <select> isn't a valid
+  // reference and must not reach the database as one. Treat '' as "not set yet" (null),
+  // and if a real id is given, confirm it exists so a bad reference fails clearly.
   if (updates.includes('vendor_id')) {
     const val = body.vendorId || null;
     const vendor = val && db.prepare('SELECT * FROM vendors WHERE id = ?').get(val);
@@ -51,23 +56,71 @@ router.put('/me', requireAuth('worker'), (req, res) => {
     }
     body.vendorId = val;
   }
-  if (updates.includes('location_id')) {
-    const val = body.locationId || null;
-    if (val && !db.prepare('SELECT 1 FROM locations WHERE id = ?').get(val)) {
-      return res.status(400).json({ error: 'Selected location does not exist — ask HR to add it first' });
-    }
-    // Site HR assisted registration: the worker is registered at that HR's own site.
-    if (req.auth.assistedBy && val !== req.auth.assistedLocationId) {
-      return res.status(400).json({ error: 'A worker registered by Site HR must be at that Site HR\'s location' });
-    }
-    body.locationId = val;
+  if (updates.includes('job_id')) {
+    const job = body.jobId && db.prepare('SELECT * FROM jobs WHERE id = ? AND active = 1').get(body.jobId);
+    if (body.jobId && !job) return res.status(400).json({ error: 'Pick a job from the list' });
+    body.jobId = job ? job.id : null;
+    extra.designation = job ? job.name : null;
+  }
+  if (updates.includes('qualification') && body.qualification && !EDUCATION.some(e => e.id === body.qualification)) {
+    return res.status(400).json({ error: 'Pick education from the list' });
+  }
+  if (updates.includes('experience') && body.experience && !EXPERIENCE.some(e => e.id === body.experience)) {
+    return res.status(400).json({ error: 'Pick experience from the list' });
+  }
+  if (updates.includes('emergency_contact') && body.emergencyContact && !/^\d{10}$/.test(body.emergencyContact)) {
+    return res.status(400).json({ error: 'Emergency contact must be a 10-digit mobile number' });
+  }
+  // Screen 5: "Live check, one face only." A photo of a photo/screen, no face, or a group
+  // photo is refused; if the check can't run (no Gemini key / outage) the photo is kept
+  // and the note tells HR it wasn't checked.
+  if (updates.includes('photo_data_url') && body.photoDataUrl) {
+    const check = await checkRegistrationPhoto(body.photoDataUrl);
+    if (!check.ok) return res.status(422).json({ error: check.error, photoCheck: true });
+    extra.photo_check_note = check.note;
   }
 
-  if (updates.length) {
-    const sql = `UPDATE workers SET ${updates.map(f => `${f} = ?`).join(', ')} WHERE id = ?`;
-    db.prepare(sql).run(...updates.map(f => body[toCamel(f)]), w.id);
+  const cols = [...updates, ...Object.keys(extra)];
+  if (cols.length) {
+    const values = [...updates.map(f => body[toCamel(f)]), ...Object.values(extra)];
+    db.prepare(`UPDATE workers SET ${cols.map(f => `${f} = ?`).join(', ')} WHERE id = ?`).run(...values, w.id);
   }
   res.json(getWorker(w.id));
+});
+
+// BRD §10 screen 9: "Site is set by GPS". The phone sends its position; the server picks
+// the TSG site whose geofence contains it (same distance + accuracy rules as punching),
+// so a worker can only be registered at a site they're actually standing at.
+router.post('/me/site-from-gps', requireAuth('worker'), (req, res) => {
+  const w = getWorker(req.auth.sub);
+  if (!w) return res.status(404).json({ error: 'Worker not found' });
+  if (w.status === 'approved') return res.status(400).json({ error: 'Approved profile cannot be self-edited — contact HR' });
+  if (req.auth.assistedBy) return res.status(400).json({ error: 'Registered by Site HR — the site is the Site HR\'s own location' });
+  const { lat, lng, accuracy } = req.body || {};
+  if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng are required' });
+  const inside = db.prepare('SELECT * FROM locations').all()
+    .map(l => ({ ...l, distanceM: Math.round(haversineMeters(lat, lng, l.lat, l.lng)) }))
+    .filter(l => l.distanceM <= l.radius)
+    .sort((a, b) => a.distanceM - b.distanceM);
+  if (!inside.length) return res.status(422).json({ error: 'You are not at a TSG site — register while you are at your work site' });
+  const site = inside[0];
+  if (accuracy != null && accuracy > site.accuracy_limit) {
+    return res.status(422).json({ error: `GPS accuracy too low (${Math.round(accuracy)} m) — move to an open area and try again` });
+  }
+  db.prepare('UPDATE workers SET location_id = ? WHERE id = ?').run(site.id, w.id);
+  res.json({ location: { id: site.id, name: site.name, brand: site.brand, distanceM: site.distanceM }, worker: getWorker(w.id) });
+});
+
+// BRD §10 screen 4: consent saved with date, time and version.
+router.post('/me/consent', requireAuth('worker'), (req, res) => {
+  const { version, language } = req.body || {};
+  if (version !== CONSENT.version) return res.status(400).json({ error: 'The consent text has changed — please read it again', currentVersion: CONSENT.version });
+  const now = Date.now();
+  db.prepare('INSERT INTO consents (id, worker_id, version, language, accepted_at, device_id, assisted_by) VALUES (?,?,?,?,?,?,?)')
+    .run(crypto.randomUUID(), req.auth.sub, version, language || null, now, (req.body || {}).deviceId || null, req.auth.assistedByEmail || null);
+  db.prepare('UPDATE workers SET consent_version = ?, consent_at = ? WHERE id = ?').run(version, now, req.auth.sub);
+  addAudit(req.auth.mobile, 'consent_given', `Consent ${version} (${language || '?'})${req.auth.assistedByEmail ? `, with Site HR ${req.auth.assistedByEmail}` : ''}`);
+  res.json(getWorker(req.auth.sub));
 });
 
 function toCamel(snake) { return snake.replace(/_([a-z])/g, (_, c) => c.toUpperCase()); }
@@ -90,9 +143,17 @@ router.post('/me/submit', requireAuth('worker'), async (req, res) => {
       return res.status(400).json({ error: `Your name "${w.name}" does not match the name on your ${doc} ("${docName}") — correct it before submitting (R05)` });
     }
   }
-  if (!w.name || !w.location_id || !w.vendor_id) {
-    return res.status(400).json({ error: 'Complete your profile (name, vendor, location) before submitting' });
+  // BRD §10 screen 7: "Name must match Aadhaar" — PAN against Aadhaar directly, not only
+  // each against the typed name.
+  if (w.aadhaar_name && w.pan_name && !namesMatch(w.aadhaar_name, w.pan_name)) {
+    return res.status(400).json({ error: `PAN name "${w.pan_name}" does not match Aadhaar name "${w.aadhaar_name}" (R05)` });
   }
+  if (!w.name || !w.location_id || !w.vendor_id) {
+    return res.status(400).json({ error: 'Complete your profile (name, vendor, site) before submitting' });
+  }
+  if (!w.job_id) return res.status(400).json({ error: 'Choose your job before submitting' });
+  if (!w.photo_data_url) return res.status(400).json({ error: 'Take your live photo before submitting' });
+  if (w.consent_version !== CONSENT.version) return res.status(400).json({ error: 'Read and accept the consent before submitting', consentVersion: CONSENT.version });
   // R06 / blacklist, re-checked at submit: documents may have been registered by
   // someone else since they were verified, and the face can only be checked now that
   // the registration photo is final.
@@ -101,7 +162,7 @@ router.post('/me/submit', requireAuth('worker'), async (req, res) => {
     if (hit) return refuseSubmit(res, w, hit);
   }
   const face = await checkFace(w);
-  db.prepare('UPDATE workers SET face_check_note = ? WHERE id = ?').run(face.note, w.id);
+  db.prepare('UPDATE workers SET face_check_note = ?, face_check_status = ? WHERE id = ?').run(face.note, face.verdict, w.id);
   if (!face.ok) return refuseSubmit(res, w, { ...face, audit: face.note });
 
   db.prepare("UPDATE workers SET status = 'pending' WHERE id = ?").run(w.id);
@@ -176,11 +237,22 @@ router.post('/:id/approve', requirePermission('workers.approve'), (req, res) => 
   const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
   if (w.status !== 'pending') return res.status(400).json({ error: `Cannot approve a worker with status "${w.status}"` });
+  // BRD §12: "Approve is enabled only when Aadhaar, PAN, face match and duplicate checks
+  // all pass." Duplicates/blacklist already stop a worker at submit; a face check that
+  // flagged a possible match or couldn't run needs HR to confirm they compared the
+  // photos, with a note that goes in the audit log.
+  if (!w.aadhaar_verified || !w.pan_verified) return res.status(400).json({ error: 'Aadhaar and PAN are not both verified — cannot approve' });
+  if (w.face_check_status === 'blocked') return res.status(400).json({ error: 'Face check matched another worker — cannot approve' });
+  const faceReviewNote = ((req.body || {}).faceReviewNote || '').trim();
+  if (w.face_check_status !== 'clear' && !faceReviewNote) {
+    return res.status(400).json({ error: `Face check needs HR review (${w.face_check_note || 'not run'}) — compare the photos and add a note`, needsFaceReview: true });
+  }
   const mgr = readManager(req.body || {});
   if (mgr.error) return res.status(400).json({ error: mgr.error });
   db.prepare("UPDATE workers SET status = 'approved', send_back_reason = NULL, reporting_manager_name = ?, reporting_manager_email = ? WHERE id = ?")
     .run(mgr.name, mgr.email, w.id);
-  addAudit(req.auth.email, 'approve_registration', `Approved ${w.name} (${w.id}), reporting manager ${mgr.name} <${mgr.email}>`);
+  addAudit(req.auth.email, 'approve_registration', `Approved ${w.name} (${w.id}), reporting manager ${mgr.name} <${mgr.email}>${faceReviewNote ? `; face reviewed by HR: ${faceReviewNote}` : ''}`);
+  notifyWorker(w, 'TSG Workforce: your registration is approved. You can now punch in at your site.');
   res.json(getWorker(w.id));
 });
 
@@ -208,6 +280,7 @@ router.post('/:id/send-back', requirePermission('workers.approve'), (req, res) =
   if (!w) return res.status(404).json({ error: 'Not found' });
   db.prepare("UPDATE workers SET status = 'sent_back', send_back_reason = ? WHERE id = ?").run(reason, w.id);
   addAudit(req.auth.email, 'sendback_registration', `Sent back ${w.name}: ${reason}`);
+  notifyWorker(w, `TSG Workforce: your registration was sent back — ${reason}. Open the app to fix it.`);
   res.json(getWorker(w.id));
 });
 

@@ -35,6 +35,7 @@ router.post('/otp/request', requirePermission('workers.register_assisted'), (req
   if (existing && existing.blacklisted) return res.status(403).json({ error: 'This mobile belongs to a blacklisted worker and cannot register again' });
   if (existing && !['draft', 'sent_back'].includes(existing.status)) return res.status(409).json({ error: `This mobile is already registered (status: ${existing.status})` });
   const result = generateOtp(mobile, PURPOSE); // sent to the worker's mobile, not HR's
+  if (result.error) return res.status(429).json(result);
   addAudit(req.user.email, 'assisted_registration_otp', `OTP sent to worker mobile ${mobile}`);
   res.json(result);
 });

@@ -74,6 +74,9 @@ function parseSecureQr(decimal) {
     gender: normaliseGender(f(4)),
     pincode: f(10),
     state: f(12),
+    careOf: f(5),
+    // house, street, landmark, locality, VTC, post office, sub-district, district, state, PIN
+    address: joinAddress([f(8), f(13), f(7), f(9), f(15), f(11), f(14), f(6), f(12), f(10)]),
     signature: verifySignature(data),
   };
 }
@@ -91,9 +94,19 @@ function parseXmlQr(xml) {
     gender: normaliseGender(attr('gender')),
     pincode: attr('pc'),
     state: attr('state'),
+    careOf: attr('co'),
+    address: joinAddress([attr('house'), attr('street'), attr('lm'), attr('loc'), attr('vtc'), attr('po'), attr('subdist'), attr('dist'), attr('state'), attr('pc')]),
     signature: 'unsigned', // the old format has no signature at all
   };
 }
+
+// Address lines as printed on the card, blanks and repeats dropped.
+function joinAddress(parts) {
+  const seen = new Set();
+  return parts.map(p => (p || '').trim()).filter(p => p && !seen.has(p.toLowerCase()) && seen.add(p.toLowerCase())).join(', ');
+}
+// "S/O Ram Kumar" -> "Ram Kumar" (care-of on Aadhaar is the father's / husband's name).
+function careOfName(co) { return (co || '').replace(/^\s*(S\/O|D\/O|W\/O|C\/O|H\/O)[:\s]*/i, '').trim(); }
 
 function normaliseDob(s) {
   if (!s) return '';
@@ -122,4 +135,4 @@ function aadhaarKey(last4, dob) {
   return /^\d{4}$/.test(last4 || '') && d ? `${last4}|${d}` : null;
 }
 
-module.exports = { parseAadhaarQr, aadhaarKey, normaliseDob };
+module.exports = { parseAadhaarQr, aadhaarKey, normaliseDob, careOfName };

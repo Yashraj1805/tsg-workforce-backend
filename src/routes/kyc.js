@@ -4,7 +4,7 @@ const { db, addAudit } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const setu = require('../services/setuClient');
 const gemini = require('../services/geminiClient');
-const { parseAadhaarQr, aadhaarKey } = require('../services/aadhaarQr');
+const { parseAadhaarQr, aadhaarKey, careOfName } = require('../services/aadhaarQr');
 const { namesMatch } = require('../services/nameMatch');
 const { checkDocument } = require('../services/identityChecks');
 
@@ -110,9 +110,11 @@ router.post('/aadhaar-qr', requireAuth('worker'), (req, res) => {
 
   db.prepare(`UPDATE workers SET
       aadhaar_masked = COALESCE(aadhaar_masked, ?), aadhaar_key = ?, aadhaar_name = ?, aadhaar_qr_format = ?, aadhaar_qr_signature = ?, aadhaar_qr_at = ?,
-      name = COALESCE(NULLIF(name, ''), ?), dob = COALESCE(NULLIF(dob, ''), ?), gender = COALESCE(NULLIF(gender, ''), ?)
+      name = COALESCE(NULLIF(name, ''), ?), dob = COALESCE(NULLIF(dob, ''), ?), gender = COALESCE(NULLIF(gender, ''), ?),
+      father_name = COALESCE(NULLIF(father_name, ''), ?), address = COALESCE(NULLIF(address, ''), ?)
     WHERE id = ?`)
-    .run(`XXXX-XXXX-${qr.last4}`, key, qr.name || null, qr.format, qr.signature, Date.now(), qr.name || null, qr.dob || null, qr.gender || null, w.id);
+    .run(`XXXX-XXXX-${qr.last4}`, key, qr.name || null, qr.format, qr.signature, Date.now(), qr.name || null, qr.dob || null, qr.gender || null,
+      careOfName(qr.careOf) || null, qr.address || null, w.id);
   addAudit(req.auth.mobile, 'aadhaar_qr_scanned', `Aadhaar QR (${qr.format}, signature ${qr.signature}) …${qr.last4}`);
   // Not blocking here — the worker may simply have typed their name differently first;
   // the app shows the warning, and submit refuses until the names agree (R05).
@@ -156,6 +158,10 @@ router.post('/pan/verify', requireAuth('worker'), async (req, res) => {
     const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
     if (w.name && result.data.full_name && !namesMatch(w.name, result.data.full_name)) {
       return res.status(422).json({ error: `PAN name "${result.data.full_name}" does not match registered name "${w.name}" (R05 requires a match)`, panName: result.data.full_name });
+    }
+    // BRD §10 screen 7: "Name must match Aadhaar".
+    if (w.aadhaar_name && result.data.full_name && !namesMatch(w.aadhaar_name, result.data.full_name)) {
+      return res.status(422).json({ error: `PAN name "${result.data.full_name}" does not match Aadhaar name "${w.aadhaar_name}" (R05)`, panName: result.data.full_name });
     }
     db.prepare('UPDATE workers SET pan_number = ?, pan_name = ?, pan_verified = 1 WHERE id = ?').run(pan, result.data.full_name || null, req.auth.sub);
     addAudit(req.auth.mobile, 'pan_verified', `PAN verified: ${pan.slice(0, 5)}XXXX${pan.slice(-1)}`);

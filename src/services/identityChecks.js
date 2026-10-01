@@ -44,14 +44,14 @@ const CONCURRENCY = 3;
 const MATCH_CONFIDENCE = 0.8;
 
 async function checkFace(worker) {
-  if (!worker.photo_data_url) return { ok: true, note: 'face check: no registration photo' };
-  if (!gemini.isConfigured()) return { ok: true, note: 'face check skipped: GEMINI_API_KEY not set' };
+  if (!worker.photo_data_url) return { ok: true, verdict: 'review', note: 'face check: no registration photo' };
+  if (!gemini.isConfigured()) return { ok: true, verdict: 'skipped', note: 'face check skipped: GEMINI_API_KEY not set' };
 
   const candidates = db.prepare(`SELECT id, name, photo_data_url, blacklisted FROM workers
       WHERE id != ? AND photo_data_url IS NOT NULL AND (blacklisted = 1 OR ${LIVE})
         AND (gender IS NULL OR ? IS NULL OR gender = ?)`)
     .all(worker.id, worker.gender || null, worker.gender || null);
-  if (!candidates.length) return { ok: true, note: 'face check: no other workers to compare' };
+  if (!candidates.length) return { ok: true, verdict: 'clear', note: 'face check: no other workers to compare' };
 
   const batches = [];
   for (let i = 0; i < candidates.length; i += BATCH) batches.push(candidates.slice(i, i + BATCH));
@@ -66,13 +66,14 @@ async function checkFace(worker) {
     }
   }
   if (!suspect) {
-    return { ok: true, note: errors.length ? `face check incomplete (${errors.length} of ${batches.length} batches failed: ${errors[0]}) — no match in the rest` : `face check: no match among ${candidates.length} workers` };
+    return { ok: true, verdict: errors.length ? 'review' : 'clear', note: errors.length ? `face check incomplete (${errors.length} of ${batches.length} batches failed: ${errors[0]}) — no match in the rest` : `face check: no match among ${candidates.length} workers` };
   }
   const confirm = await gemini.compareFaces(suspect.cand.photo_data_url, worker.photo_data_url);
   const desc = `${suspect.cand.name} (${suspect.cand.id})${suspect.cand.blacklisted ? ' [BLACKLISTED]' : ''}`;
   if (confirm.ok && confirm.samePerson && confirm.confidence >= MATCH_CONFIDENCE) {
     return {
       ok: false,
+      verdict: 'blocked',
       kind: suspect.cand.blacklisted ? 'blacklisted' : 'duplicate',
       status: suspect.cand.blacklisted ? 403 : 409,
       error: suspect.cand.blacklisted
@@ -81,7 +82,21 @@ async function checkFace(worker) {
       note: `face matches ${desc}: ${suspect.first.reason} | confirmed: ${confirm.reason}`,
     };
   }
-  return { ok: true, note: `face check: possible match with ${desc} not confirmed by second check (${confirm.ok ? confirm.reason : confirm.error}) — HR please compare` };
+  return { ok: true, verdict: 'review', note: `face check: possible match with ${desc} not confirmed by second check (${confirm.ok ? confirm.reason : confirm.error}) — HR please compare` };
 }
 
-module.exports = { checkDocument, checkFace };
+// BRD §10 screen 5: "Live check, one face only." Refuses the registration photo only on a
+// confident verdict (no face / several faces / photo of a photo or screen); anything the
+// model can't decide, or an unavailable check, keeps the photo with a note for HR.
+async function checkRegistrationPhoto(photoDataUrl) {
+  if (!gemini.isConfigured()) return { ok: true, note: 'photo check skipped: GEMINI_API_KEY not set' };
+  const r = await gemini.checkRegistrationPhoto(photoDataUrl);
+  if (!r.ok) return { ok: true, note: `photo check unavailable: ${r.error}` };
+  const sure = r.confidence >= 0.75;
+  if (sure && r.faceCount === 0) return { ok: false, error: 'No face found in the photo — look straight at the camera and retake' };
+  if (sure && r.faceCount > 1) return { ok: false, error: 'More than one face in the photo — only the worker should be in the picture' };
+  if (sure && !r.isLivePerson) return { ok: false, error: 'This looks like a photo of a photo or a screen — take a live photo of the worker' };
+  return { ok: true, note: `photo check: faces=${r.faceCount} live=${r.isLivePerson} confidence=${r.confidence} — ${r.reason}` };
+}
+
+module.exports = { checkDocument, checkFace, checkRegistrationPhoto };
