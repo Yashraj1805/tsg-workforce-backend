@@ -92,9 +92,11 @@ router.post('/', requireAuth('worker'), async (req, res) => {
   }
 
   const id = crypto.randomUUID();
-  db.prepare(`INSERT INTO punches (id, worker_id, type, ts, lat, lng, accuracy, distance_m, selfie_data_url, result, reason, device_id, face_match_note, created_at)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, w.id, type, now, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'ok', null, deviceId || null, faceMatchNote, now);
+  // vendor_id/location_id stamped at punch time so the vendor bill check (R16) bills the
+  // vendor the worker belonged to that day, even after a later transfer.
+  db.prepare(`INSERT INTO punches (id, worker_id, type, ts, lat, lng, accuracy, distance_m, selfie_data_url, result, reason, device_id, face_match_note, vendor_id, location_id, created_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, w.id, type, now, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'ok', null, deviceId || null, faceMatchNote, w.vendor_id, w.location_id, now);
   addAudit(w.mobile, 'punch_' + type, `${type.toUpperCase()} at ${new Date(now).toISOString()}, ${distanceM}m from ${loc.name}`);
 
   res.json({ ok: true, id, type, ts: now, distanceM, accuracy });

@@ -46,6 +46,11 @@ const PERMISSIONS = {
   'masters.write':         ['system_admin'],
   'users.manage':          ['system_admin'],
   'audit.read':            ['central_hr', 'security', 'system_admin'],
+  // R16 vendor bill check: Finance enters invoice days; vendor coordinators see their own
+  // vendor's system days (scope applies). Month lock is Central HR's month-end step.
+  'billing.read':          ['mis_finance', 'central_hr', 'vendor_coordinator'],
+  'billing.write':         ['mis_finance'],
+  'attendance.lock':       ['central_hr'],
 };
 
 // Security's punch access is limited to blocked attempts (BRD: "View blocked punches").

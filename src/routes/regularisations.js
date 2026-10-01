@@ -3,6 +3,7 @@ const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { workerScopeSql, workerIdScopeSql } = require('../rbac');
+const { isLocked } = require('../services/attendance');
 
 const router = express.Router();
 
@@ -12,6 +13,8 @@ const router = express.Router();
 router.post('/', requirePermission('regularisations.raise'), (req, res) => {
   const { workerId, date, reason } = req.body || {};
   if (!workerId || !date || !reason) return res.status(400).json({ error: 'workerId, date and reason are required' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  if (isLocked(date.slice(0, 7))) return res.status(409).json({ error: `Attendance for ${date.slice(0, 7)} is locked — no corrections after month-end` });
   const scope = workerScopeSql(req.user);
   if (!db.prepare(`SELECT 1 FROM workers WHERE id = ? AND ${scope.sql}`).get(workerId, ...scope.args)) {
     return res.status(404).json({ error: 'Worker not found' });
@@ -48,6 +51,7 @@ router.post('/:id/decide', requirePermission('regularisations.decide'), (req, re
   const r = db.prepare(`SELECT * FROM regularisations WHERE id = ? AND ${scope.sql}`).get(req.params.id, ...scope.args);
   if (!r) return res.status(404).json({ error: 'Not found' });
   if (r.status !== 'pending') return res.status(400).json({ error: `Already ${r.status}` });
+  if (isLocked(r.date.slice(0, 7))) return res.status(409).json({ error: `Attendance for ${r.date.slice(0, 7)} is locked — no corrections after month-end` });
   const checker = req.user.name || req.user.email;
   const samePerson = r.maker_id ? r.maker_id === req.user.id : r.maker === checker;
   if (samePerson) return res.status(403).json({ error: 'Maker and checker must be different people (BR-08) — log in as a different HR user' });

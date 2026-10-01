@@ -162,6 +162,12 @@ addColumnIfMissing('vendors', 'contract_end', 'TEXT');
 addColumnIfMissing('workers', 'exit_date', 'TEXT');
 addColumnIfMissing('workers', 'exit_reason', 'TEXT');
 db.exec('CREATE TABLE IF NOT EXISTS worker_events (id TEXT PRIMARY KEY, worker_id TEXT NOT NULL REFERENCES workers(id), ts INTEGER NOT NULL, by_user TEXT, type TEXT NOT NULL, detail TEXT, reason TEXT)');
+// R16 vendor bill check + month-end lock (proposal: "Attendance locked by 2nd by Central
+// HR; vendor invoices on portal days only; Finance checks the bill").
+addColumnIfMissing('punches', 'vendor_id', 'TEXT');
+addColumnIfMissing('punches', 'location_id', 'TEXT');
+db.exec('CREATE TABLE IF NOT EXISTS vendor_invoices (id TEXT PRIMARY KEY, vendor_id TEXT NOT NULL REFERENCES vendors(id), month TEXT NOT NULL, invoice_days REAL NOT NULL, invoice_ref TEXT, amount REAL, entered_by TEXT NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (vendor_id, month))');
+db.exec('CREATE TABLE IF NOT EXISTS attendance_locks (month TEXT PRIMARY KEY, locked_by TEXT NOT NULL, locked_at INTEGER NOT NULL)');
 addColumnIfMissing('regularisations', 'maker_id', 'TEXT');
 addColumnIfMissing('regularisations', 'checker_id', 'TEXT');
 
