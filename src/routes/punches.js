@@ -4,6 +4,7 @@ const { db, addAudit } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { haversineMeters } = require('../services/geo');
 const gemini = require('../services/geminiClient');
+const scheduler = require('../services/scheduler');
 
 const router = express.Router();
 
@@ -131,6 +132,12 @@ function logBlocked(workerId, type, lat, lng, accuracy, distanceM, selfieDataUrl
               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(id, workerId, type, now, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'blocked', reason, deviceId || null, faceMatchNote || null, now);
   addAudit(workerId, 'punch_blocked', `${type} blocked: ${reason}`);
+
+  // R15: "Blocked punches ... Immediately" — fired right here rather than on a
+  // schedule. Never let an email failure affect the punch response itself.
+  const w = db.prepare('SELECT name FROM workers WHERE id = ?').get(workerId);
+  scheduler.sendBlockedPunchAlert({ type, reason, distance_m: distanceM }, w ? w.name : workerId)
+    .catch(e => console.error('[blocked-punch-alert]', e.message));
 }
 
 router.get('/me', requireAuth('worker'), (req, res) => {

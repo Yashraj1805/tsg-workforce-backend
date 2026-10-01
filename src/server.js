@@ -20,6 +20,7 @@ app.use('/api', require('./routes/masters')); // /api/vendors, /api/locations
 app.use('/api/regularisations', require('./routes/regularisations'));
 app.use('/api/audit', require('./routes/audit'));
 app.use('/api/kiosk', require('./routes/kiosk'));
+app.use('/api/reports', require('./routes/reports'));
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 // eslint-disable-next-line no-unused-vars
@@ -30,3 +31,4 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`TSG Workforce backend listening on http://localhost:${PORT}`));
+require('./services/scheduler').start();

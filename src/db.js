@@ -135,6 +135,17 @@ if (!punchColumns.includes('face_match_note')) {
   db.exec('ALTER TABLE punches ADD COLUMN face_match_note TEXT');
 }
 
+// R08/R15: each worker's reporting manager — needed for the "My team today" email.
+// Just the data columns; the HR screen to set these at approval is a separate,
+// not-yet-built piece (see PUT /:id/manager for the minimal API this report needs).
+const workerColumns = db.prepare("PRAGMA table_info(workers)").all().map(c => c.name);
+if (!workerColumns.includes('manager_name')) {
+  db.exec('ALTER TABLE workers ADD COLUMN manager_name TEXT');
+}
+if (!workerColumns.includes('manager_email')) {
+  db.exec('ALTER TABLE workers ADD COLUMN manager_email TEXT');
+}
+
 function addAudit(user, action, detail) {
   db.prepare('INSERT INTO audit_log (id, ts, user, action, detail) VALUES (?,?,?,?,?)')
     .run(require('node:crypto').randomUUID(), Date.now(), user || 'system', action, detail || '');

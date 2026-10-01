@@ -123,6 +123,17 @@ router.post('/:id/exit', requireAuth('hr'), (req, res) => {
   res.json(getWorker(w.id));
 });
 
+// Minimal API for R15's "My team today" email — assigning a reporting manager is
+// otherwise part of R08, which isn't built yet (no dedicated HR screen calls this).
+router.put('/:id/manager', requireAuth('hr'), (req, res) => {
+  const { managerName, managerEmail } = req.body || {};
+  const w = getWorker(req.params.id);
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  db.prepare('UPDATE workers SET manager_name = ?, manager_email = ? WHERE id = ?').run(managerName || null, managerEmail || null, w.id);
+  addAudit(req.auth.email, 'set_manager', `Set ${w.name}'s reporting manager to ${managerName || ''} <${managerEmail || ''}>`);
+  res.json(getWorker(w.id));
+});
+
 router.post('/:id/transfer', requireAuth('hr'), (req, res) => {
   const { locationId, vendorId } = req.body || {};
   const w = getWorker(req.params.id);
