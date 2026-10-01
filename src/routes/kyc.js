@@ -7,6 +7,7 @@ const gemini = require('../services/geminiClient');
 const { parseAadhaarQr, aadhaarKey, careOfName } = require('../services/aadhaarQr');
 const { namesMatch } = require('../services/nameMatch');
 const { checkDocument } = require('../services/identityChecks');
+const { decodeQrFromDataUrl } = require('../services/qrImage');
 
 const PAN_RE = /^[A-Z]{5}\d{4}[A-Z]$/;
 
@@ -94,6 +95,21 @@ router.get('/digilocker/:id/complete', requireAuth('worker'), async (req, res) =
 router.post('/aadhaar-qr', requireAuth('worker'), (req, res) => {
   const { qrText } = req.body || {};
   if (!qrText) return res.status(400).json({ error: 'qrText is required' });
+  return acceptAadhaarQr(req, res, qrText);
+});
+
+// Fallback when the live scanner can't read the dense Secure QR (and ML Kit on the phone
+// couldn't read the photo either): decode the QR from a still photo here.
+router.post('/aadhaar-qr-image', requireAuth('worker'), (req, res) => {
+  const { photoDataUrl } = req.body || {};
+  if (!photoDataUrl) return res.status(400).json({ error: 'photoDataUrl is required' });
+  let text;
+  try { text = decodeQrFromDataUrl(photoDataUrl); } catch (e) { return res.status(400).json({ error: e.message }); }
+  if (!text) return res.status(422).json({ error: 'Could not read the QR in the photo — hold the phone closer so the QR fills most of the photo, in good light, without glare' });
+  return acceptAadhaarQr(req, res, text);
+});
+
+function acceptAadhaarQr(req, res, qrText) {
   let qr;
   try { qr = parseAadhaarQr(qrText); } catch (e) { return res.status(422).json({ error: e.message }); }
   if (qr.signature === 'invalid') {
@@ -121,7 +137,7 @@ router.post('/aadhaar-qr', requireAuth('worker'), (req, res) => {
   const nameMatches = !w.name || !qr.name || namesMatch(w.name, qr.name);
   res.json({ last4: qr.last4, name: qr.name, dob: qr.dob, gender: qr.gender, format: qr.format, signature: qr.signature, nameMatches,
     worker: db.prepare('SELECT * FROM workers WHERE id = ?').get(w.id) });
-});
+}
 
 // ---- PAN card photo, number read by OCR (BRD R04) ----
 router.post('/pan/photo', requireAuth('worker'), async (req, res) => {
