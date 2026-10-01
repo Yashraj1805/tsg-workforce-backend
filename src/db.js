@@ -156,6 +156,8 @@ addColumnIfMissing('workers', 'pan_ocr_number', 'TEXT');
 addColumnIfMissing('workers', 'pan_ocr_name', 'TEXT');
 addColumnIfMissing('workers', 'pan_name', 'TEXT'); // R05: name returned by the PAN verification API
 addColumnIfMissing('workers', 'face_check_note', 'TEXT'); // R06: duplicate/blacklist face check outcome, shown to HR
+addColumnIfMissing('vendors', 'contract_start', 'TEXT'); // R01, YYYY-MM-DD
+addColumnIfMissing('vendors', 'contract_end', 'TEXT');
 addColumnIfMissing('regularisations', 'maker_id', 'TEXT');
 addColumnIfMissing('regularisations', 'checker_id', 'TEXT');
 

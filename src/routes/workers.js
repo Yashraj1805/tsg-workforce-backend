@@ -38,8 +38,14 @@ router.put('/me', requireAuth('worker'), (req, res) => {
   // stale/bad reference fails with a clear error instead of a database crash.
   if (updates.includes('vendor_id')) {
     const val = body.vendorId || null;
-    if (val && !db.prepare('SELECT 1 FROM vendors WHERE id = ?').get(val)) {
+    const vendor = val && db.prepare('SELECT * FROM vendors WHERE id = ?').get(val);
+    if (val && !vendor) {
       return res.status(400).json({ error: 'Selected vendor does not exist — ask HR to add it first' });
+    }
+    // R01: no new registrations under a vendor that's deactivated or out of contract.
+    const today = new Date().toISOString().slice(0, 10);
+    if (vendor && vendor.id !== w.vendor_id && (vendor.status !== 'active' || (vendor.contract_end && vendor.contract_end < today) || (vendor.contract_start && vendor.contract_start > today))) {
+      return res.status(400).json({ error: `${vendor.name} has no active contract — choose another vendor or ask HR` });
     }
     body.vendorId = val;
   }

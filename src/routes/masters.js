@@ -12,24 +12,50 @@ router.get('/vendors', requireAuth(), (req, res) => {
   res.json(db.prepare('SELECT * FROM vendors ORDER BY created_at DESC').all());
 });
 
+// R01: "Vendor list: name, GSTIN, contact, contract dates". Validates what's given and
+// merges it over the existing row (for PUT), so the same function serves both.
+const GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function readVendor(body, existing) {
+  const pick = (k, col) => body[k] !== undefined ? (String(body[k]).trim() || null) : (existing ? existing[col] : null);
+  const v = {
+    name: pick('name', 'name'),
+    gstin: pick('gstin', 'gstin'), pan: pick('pan', 'pan'),
+    contact_person: pick('contactPerson', 'contact_person'), phone: pick('phone', 'phone'),
+    contract_start: pick('contractStart', 'contract_start'), contract_end: pick('contractEnd', 'contract_end'),
+    status: pick('status', 'status') || 'active',
+  };
+  if (v.gstin) v.gstin = v.gstin.toUpperCase();
+  if (v.pan) v.pan = v.pan.toUpperCase();
+  if (!v.name) return { error: 'name is required' };
+  if (v.gstin && !GSTIN_RE.test(v.gstin)) return { error: 'GSTIN should be 15 characters, e.g. 07ABCDE1234F1Z5' };
+  if (v.phone && !/^\d{10}$/.test(v.phone)) return { error: 'Phone should be a 10-digit mobile number' };
+  for (const d of ['contract_start', 'contract_end']) if (v[d] && !DATE_RE.test(v[d])) return { error: 'Contract dates must be YYYY-MM-DD' };
+  if (v.contract_start && v.contract_end && v.contract_end < v.contract_start) return { error: 'Contract end date is before the start date' };
+  if (!['active', 'inactive'].includes(v.status)) return { error: 'status must be "active" or "inactive"' };
+  return { v };
+}
+
 router.post('/vendors', requirePermission('masters.write'), (req, res) => {
-  const { name, gstin, pan, contactPerson, phone } = req.body || {};
-  if (!name) return res.status(400).json({ error: 'name is required' });
+  const { v, error } = readVendor(req.body || {}, null);
+  if (error) return res.status(400).json({ error });
   const id = crypto.randomUUID();
-  db.prepare('INSERT INTO vendors (id, name, gstin, pan, contact_person, phone, status, created_at) VALUES (?,?,?,?,?,?,?,?)')
-    .run(id, name, gstin || null, pan || null, contactPerson || null, phone || null, 'active', Date.now());
-  addAudit(req.auth.email, 'add_vendor', name);
+  db.prepare('INSERT INTO vendors (id, name, gstin, pan, contact_person, phone, contract_start, contract_end, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(id, v.name, v.gstin, v.pan, v.contact_person, v.phone, v.contract_start, v.contract_end, v.status, Date.now());
+  addAudit(req.auth.email, 'add_vendor', `${v.name} (contract ${v.contract_start || '?'} to ${v.contract_end || '?'})`);
   res.status(201).json(db.prepare('SELECT * FROM vendors WHERE id = ?').get(id));
 });
 
 router.put('/vendors/:id', requirePermission('masters.write'), (req, res) => {
-  const v = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
-  if (!v) return res.status(404).json({ error: 'Not found' });
-  const { name, gstin, pan, contactPerson, phone, status } = req.body || {};
-  db.prepare('UPDATE vendors SET name=COALESCE(?,name), gstin=COALESCE(?,gstin), pan=COALESCE(?,pan), contact_person=COALESCE(?,contact_person), phone=COALESCE(?,phone), status=COALESCE(?,status) WHERE id=?')
-    .run(name, gstin, pan, contactPerson, phone, status, req.params.id);
-  addAudit(req.auth.email, 'edit_vendor', v.name);
-  res.json(db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id));
+  const old = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
+  if (!old) return res.status(404).json({ error: 'Not found' });
+  const { v, error } = readVendor(req.body || {}, old);
+  if (error) return res.status(400).json({ error });
+  db.prepare('UPDATE vendors SET name=?, gstin=?, pan=?, contact_person=?, phone=?, contract_start=?, contract_end=?, status=? WHERE id=?')
+    .run(v.name, v.gstin, v.pan, v.contact_person, v.phone, v.contract_start, v.contract_end, v.status, old.id);
+  const changed = Object.keys(v).filter(k => v[k] !== old[k]).map(k => `${k}: ${old[k] ?? '-'} -> ${v[k] ?? '-'}`);
+  addAudit(req.auth.email, 'edit_vendor', `${old.name}: ${changed.join(', ') || 'no changes'}`);
+  res.json(db.prepare('SELECT * FROM vendors WHERE id = ?').get(old.id));
 });
 
 // ---- Locations (BRD R02) ----
