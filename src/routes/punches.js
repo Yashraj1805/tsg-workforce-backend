@@ -18,6 +18,22 @@ const TELEPORT_MAX_KMH = 250;     // faster than any road travel between two pun
 const TELEPORT_WINDOW_MS = 6 * 3600000;
 const TELEPORT_MAX_ACCURACY_M = 100; // fixes vaguer than this aren't used for the jump check
 
+// Deterministic risk-triage score (0-100) for an ALLOWED punch — every individual check
+// already passed (evaluatePunch's own thresholds decide block/allow), this just flags
+// "borderline on several signals at once" for HR to glance at on the Exceptions screen,
+// without needing to read every face-match note by hand. No extra Gemini call — built
+// entirely from signals evaluatePunch already gathered deciding whether to allow it.
+function computeRiskScore({ accuracy, accuracyLimit, distanceM, radius, faceBorderline, integritySuspicious, offline }) {
+  let score = 0;
+  const reasons = [];
+  if (accuracy != null && accuracy > accuracyLimit * 0.7) { score += 15; reasons.push('GPS accuracy close to the limit'); }
+  if (radius && distanceM > radius * 0.8) { score += 10; reasons.push('near the geofence edge'); }
+  if (faceBorderline) { score += 35; reasons.push('face-match was borderline'); }
+  if (integritySuspicious) { score += 30; reasons.push('same coordinates as another day'); }
+  if (offline) { score += 10; reasons.push('offline punch'); }
+  return { score: Math.min(100, score), reasons };
+}
+
 // ---- Every punch check, in one place. Runs server-side against server-held data (BRD:
 // "A punch is saved only if location, face and phone pass the server checks" / "Server
 // time is saved, not phone time"). Used by the live punch below and by offline sync
@@ -89,6 +105,7 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   // mismatch — or a "photo of a screen/photo" spoof verdict (BRD §8: "Face match with
   // live check") — only blocks if a second, independent call agrees.
   let faceMatchNote = null;
+  let faceBorderline = false;
   if (opts.kiosk) {
     // R20 gate tablet: no personal phone to bind, so the face is the only proof of who is
     // punching — it must positively match, and if it can't be checked the punch is refused.
@@ -99,6 +116,7 @@ async function evaluatePunch(w, input, ts, opts = {}) {
     if (r.spoofSuspected) return block('spoof_suspected', 422, 'This looks like a photo of a photo or a screen — look at the camera', kNote, distanceM);
     if (!r.samePerson || r.confidence < 0.75) return block('face_mismatch', 422, 'Face did not match the selected worker', kNote, distanceM);
     faceMatchNote = kNote;
+    faceBorderline = r.confidence < 0.9;
   } else if (gemini.isConfigured() && w.photo_data_url) {
     const first = await gemini.compareFaces(w.photo_data_url, selfieDataUrl);
     if (first.ok) {
@@ -113,9 +131,13 @@ async function evaluatePunch(w, input, ts, opts = {}) {
         if (second.ok && first.spoofSuspected && second.spoofSuspected) {
           return block('spoof_suspected', 422, 'This looks like a photo of a photo or a screen — take a live selfie', `[check 1] ${firstNote} | [check 2 confirmed spoof] ${secondNote}`, distanceM);
         }
+        // A first-check flag that the second call didn't confirm — allowed, but that's
+        // exactly the "passed, but only just" case the risk score exists for.
+        faceBorderline = true;
         faceMatchNote = `[check 1] ${firstNote} | [check 2 did not confirm] ${secondNote} — allowed`;
       } else {
         faceMatchNote = firstNote;
+        faceBorderline = first.confidence < 0.85;
       }
     } else {
       faceMatchNote = `face check unavailable: ${first.error}`;
@@ -126,15 +148,20 @@ async function evaluatePunch(w, input, ts, opts = {}) {
     alertBlockedPunch(w, 'gps_suspicious', integrityNote);
   }
 
+  const risk = computeRiskScore({
+    accuracy, accuracyLimit: loc.accuracy_limit, distanceM, radius: loc.radius,
+    faceBorderline, integritySuspicious: !!integrityNote, offline: !!opts.offline,
+  });
+
   // Bind the phone on first successful punch (R03).
   if (!opts.kiosk && !w.device_id && deviceId) db.prepare('UPDATE workers SET device_id = ? WHERE id = ?').run(deviceId, w.id);
 
   const id = crypto.randomUUID();
   // vendor_id/location_id stamped at punch time so the vendor bill check (R16) bills the
   // vendor the worker belonged to that day, even after a later transfer.
-  db.prepare(`INSERT INTO punches (id, worker_id, type, ts, lat, lng, accuracy, distance_m, selfie_data_url, result, reason, device_id, face_match_note, vendor_id, location_id, offline, created_at)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, w.id, type, ts, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'ok', null, deviceId || null, faceMatchNote, w.vendor_id, w.location_id, opts.offline ? 1 : 0, Date.now());
+  db.prepare(`INSERT INTO punches (id, worker_id, type, ts, lat, lng, accuracy, distance_m, selfie_data_url, result, reason, device_id, face_match_note, vendor_id, location_id, offline, risk_score, risk_reasons, created_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, w.id, type, ts, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'ok', null, deviceId || null, faceMatchNote, w.vendor_id, w.location_id, opts.offline ? 1 : 0, risk.score, risk.reasons.join(', ') || null, Date.now());
   addAudit(w.mobile, 'punch_' + type, `${type.toUpperCase()} at ${new Date(ts).toISOString()}${opts.offline ? ' (offline, synced later)' : ''}, ${distanceM}m from ${loc.name}`);
   return { ok: true, punch: { id, type, ts, distanceM, accuracy, location: loc.name } };
 }
@@ -230,6 +257,7 @@ router.get('/', requirePermission('punches.read'), (req, res) => {
   if (workerId) { sql += ' AND punches.worker_id = ?'; args.push(workerId); }
   if (date) { sql += ` AND ${sqlDay('punches.ts')} = ?`; args.push(date); }
   if (result) { sql += ' AND punches.result = ?'; args.push(result); }
+  if (req.query.minRisk) { sql += ' AND punches.risk_score >= ?'; args.push(Number(req.query.minRisk)); }
   sql += ' ORDER BY punches.ts DESC LIMIT 500';
   res.json(db.prepare(sql).all(...args));
 });
