@@ -14,7 +14,7 @@ function todayStr(ts) { return new Date(ts).toISOString().slice(0, 10); }
 // checks" / "Server time is saved, not phone time"). The client cannot spoof the
 // worker's assigned location, the geofence radius, or the timestamp. ----
 router.post('/', requireAuth('worker'), async (req, res) => {
-  const { type, lat, lng, accuracy, isMockLocation, selfieDataUrl, deviceId } = req.body || {};
+  const { type, lat, lng, accuracy, isMockLocation, selfieDataUrl, deviceId, offline, capturedAt } = req.body || {};
   if (type !== 'in' && type !== 'out') return res.status(400).json({ error: 'type must be "in" or "out"' });
   if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng are required' });
   if (!selfieDataUrl) return res.status(400).json({ error: 'selfieDataUrl is required — live camera capture only (FR-K05/R09)' });
@@ -56,7 +56,21 @@ router.post('/', requireAuth('worker'), async (req, res) => {
     return res.status(422).json({ error: `Outside the geofenced work location (${distanceM}m away, radius ${loc.radius}m)`, blocked: true, reason: 'outside_geofence', distanceM, accuracy });
   }
 
-  const now = Date.now(); // server time, never trust a client-supplied timestamp
+  // R19: "Offline punch inside the site, sent within 12 hours ... with the original
+  // time." The one deliberate exception to "server time, never trust a client-supplied
+  // timestamp" — but still bounded and validated, not a blind trust: capturedAt can't be
+  // in the future, and anything older than 12h is rejected outright rather than silently
+  // backdating attendance.
+  let now = Date.now();
+  if (offline === true) {
+    if (typeof capturedAt !== 'number') return res.status(400).json({ error: 'capturedAt is required for an offline punch' });
+    if (capturedAt > now + 5 * 60000) return res.status(400).json({ error: 'Offline punch time is in the future' });
+    if (now - capturedAt > 12 * 3600000) {
+      logBlocked(w.id, type, lat, lng, accuracy, distanceM, selfieDataUrl, deviceId, 'offline_expired');
+      return res.status(422).json({ error: 'This offline punch is more than 12 hours old and can no longer be sent (R19)', blocked: true, reason: 'offline_expired' });
+    }
+    now = capturedAt;
+  }
   const today = todayStr(now);
   const todaysPunches = db.prepare("SELECT * FROM punches WHERE worker_id = ? AND result = 'ok' AND date(ts / 1000, 'unixepoch') = date(? / 1000, 'unixepoch') ORDER BY ts")
     .all(w.id, now);
