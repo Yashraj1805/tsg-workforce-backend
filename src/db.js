@@ -144,6 +144,16 @@ addColumnIfMissing('hr_users', 'vendor_id', 'TEXT REFERENCES vendors(id)');
 addColumnIfMissing('hr_users', 'status', "TEXT NOT NULL DEFAULT 'active'");
 addColumnIfMissing('workers', 'reporting_manager_email', 'TEXT');
 addColumnIfMissing('workers', 'reporting_manager_name', 'TEXT'); // R08
+// R04: Aadhaar QR + PAN photo capture. aadhaar_key (last-4 + DOB) is the duplicate /
+// blacklist key — the full Aadhaar number is never stored (BRD §9).
+addColumnIfMissing('workers', 'aadhaar_key', 'TEXT');
+addColumnIfMissing('workers', 'aadhaar_name', 'TEXT');
+addColumnIfMissing('workers', 'aadhaar_qr_format', 'TEXT');
+addColumnIfMissing('workers', 'aadhaar_qr_signature', 'TEXT');
+addColumnIfMissing('workers', 'aadhaar_qr_at', 'INTEGER');
+addColumnIfMissing('workers', 'pan_photo_data_url', 'TEXT');
+addColumnIfMissing('workers', 'pan_ocr_number', 'TEXT');
+addColumnIfMissing('workers', 'pan_ocr_name', 'TEXT');
 addColumnIfMissing('regularisations', 'maker_id', 'TEXT');
 addColumnIfMissing('regularisations', 'checker_id', 'TEXT');
 

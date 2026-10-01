@@ -50,4 +50,8 @@ async function verifyPan(pan, reason) {
   return body; // { data, message, verification, traceId }
 }
 
-module.exports = { createDigilockerRequest, fetchDigilockerAadhaar, revokeDigilocker, verifyPan };
+function isConfigured() {
+  return !!(process.env.SETU_CLIENT_ID && process.env.SETU_CLIENT_SECRET && process.env.SETU_PRODUCT_INSTANCE_ID);
+}
+
+module.exports = { createDigilockerRequest, fetchDigilockerAadhaar, revokeDigilocker, verifyPan, isConfigured };

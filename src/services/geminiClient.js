@@ -100,4 +100,28 @@ async function detectFace(frameDataUrl) {
   );
 }
 
-module.exports = { compareFaces, detectFace, isConfigured };
+// BRD R04: PAN is captured as a photo, not typed. This reads the card; the number it
+// returns is then verified against the Income Tax records through Setu (kyc.js), so an
+// OCR misread fails verification rather than registering a wrong PAN.
+async function readPanCard(photoDataUrl) {
+  const photo = parseDataUrl(photoDataUrl);
+  return callGemini(
+    'This is a phone camera photo of what should be an Indian PAN card (Permanent Account Number card issued by the Income Tax Department). It may be rotated, angled or slightly blurred. Read it. The PAN is exactly 10 characters: 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F) — read it character by character, distinguishing 0/O, 1/I, 5/S, 8/B by position (positions 1-5 and 10 are letters, 6-9 are digits). If it is not a PAN card (e.g. an Aadhaar card, a screen, a blank photo), set isPanCard false and leave the other fields empty.',
+    [photo],
+    {
+      type: 'object',
+      properties: {
+        isPanCard: { type: 'boolean', description: 'true only if this is a photo of an Indian PAN card' },
+        panNumber: { type: 'string', description: 'the 10-character PAN in upper case, or empty' },
+        nameOnCard: { type: 'string', description: 'cardholder name as printed, or empty' },
+        fatherName: { type: 'string', description: "father's name as printed, or empty" },
+        dob: { type: 'string', description: 'date of birth as printed (DD/MM/YYYY), or empty' },
+        confidence: { type: 'number', description: '0 to 1, how sure you are the PAN was read correctly' },
+      },
+      required: ['isPanCard', 'panNumber', 'nameOnCard', 'confidence'],
+    },
+    15000
+  );
+}
+
+module.exports = { compareFaces, detectFace, readPanCard, isConfigured };

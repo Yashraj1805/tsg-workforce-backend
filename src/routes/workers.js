@@ -2,6 +2,7 @@ const express = require('express');
 const { db, addAudit } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { workerScopeSql } = require('../rbac');
+const setu = require('../services/setuClient');
 
 const router = express.Router();
 
@@ -62,6 +63,11 @@ router.post('/me/submit', requireAuth('worker'), (req, res) => {
   if (!w) return res.status(404).json({ error: 'Worker not found' });
   if (!w.aadhaar_verified || !w.pan_verified) {
     return res.status(400).json({ error: 'Aadhaar and PAN must both be verified before submitting for HR approval' });
+  }
+  // R04: documents captured by camera. Only enforced once real KYC is configured — the
+  // dev KYC skip (kyc.js /skip-dev) exists precisely because there's nothing to scan yet.
+  if (setu.isConfigured() && (!w.aadhaar_qr_at || !w.pan_photo_data_url)) {
+    return res.status(400).json({ error: 'Scan the Aadhaar QR and take a photo of the PAN card before submitting (R04)' });
   }
   if (!w.name || !w.location_id || !w.vendor_id) {
     return res.status(400).json({ error: 'Complete your profile (name, vendor, location) before submitting' });
