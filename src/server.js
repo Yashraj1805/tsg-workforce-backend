@@ -19,6 +19,7 @@ app.use('/api/punches', require('./routes/punches'));
 app.use('/api', require('./routes/masters')); // /api/vendors, /api/locations
 app.use('/api/regularisations', require('./routes/regularisations'));
 app.use('/api/audit', require('./routes/audit'));
+app.use('/api/kiosk', require('./routes/kiosk'));
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 // eslint-disable-next-line no-unused-vars

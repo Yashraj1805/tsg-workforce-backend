@@ -12,7 +12,7 @@ const router = express.Router();
 // face is framed instead of requiring a manual shutter tap. Deliberately separate from
 // the actual identity check in compareFaces (see punches.js) — this only answers "is a
 // face here," not "is it the right person." ----
-router.post('/face-detect', requireAuth('worker'), async (req, res) => {
+router.post('/face-detect', requireAuth(['worker', 'kiosk']), async (req, res) => {
   const { frameDataUrl } = req.body || {};
   if (!frameDataUrl) return res.status(400).json({ error: 'frameDataUrl is required' });
   if (!gemini.isConfigured()) return res.status(503).json({ error: 'Gemini not configured — auto-scan unavailable' });

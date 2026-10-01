@@ -100,4 +100,30 @@ async function detectFace(frameDataUrl) {
   );
 }
 
-module.exports = { compareFaces, detectFace, isConfigured };
+// R20: gate kiosk face identification — "who is this", not "is this the same person as
+// X" (that's compareFaces). Sends the live frame plus every candidate's registration
+// photo in ONE call rather than N sequential compareFaces calls — cheaper and lets the
+// model directly compare candidates against each other, not just each one in isolation.
+// Fine at pilot scale (one site's worker roster); a very large site would need batching,
+// not attempted here.
+async function identifyFace(frameDataUrl, candidates) {
+  const frame = parseDataUrl(frameDataUrl);
+  const images = [frame, ...candidates.map(c => parseDataUrl(c.photoDataUrl))];
+  const candidateList = candidates.map((c, i) => `${i + 1}. workerId=${c.workerId} name=${c.name}`).join('\n');
+  return callGemini(
+    `You are a face-identification check for an unattended gate kiosk at a workplace. The FIRST image is a live camera capture of someone standing at the kiosk right now. The remaining ${candidates.length} images are registration photos of workers registered at this site, in this order:\n${candidateList}\nDecide which registration photo, if any, shows the same person as the first image. The live capture may be rotated/upside-down — ignore orientation entirely, judge purely on facial identity. If no registration photo is a confident match, say so rather than guessing — a false "no match" just means try again, but a false match would punch in the wrong person.`,
+    images,
+    {
+      type: 'object',
+      properties: {
+        matchedWorkerId: { type: 'string', description: 'the workerId of the matching registration photo, or an empty string if no confident match' },
+        confidence: { type: 'number', description: '0 to 1, how confident you are in the match' },
+        reason: { type: 'string', description: 'one short sentence' },
+      },
+      required: ['matchedWorkerId', 'confidence', 'reason'],
+    },
+    20000
+  );
+}
+
+module.exports = { compareFaces, detectFace, identifyFace, isConfigured };

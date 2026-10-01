@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
 const { generateOtp, verifyOtp } = require('../services/otp');
-const { issueToken } = require('../middleware/auth');
+const { issueToken, requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -63,6 +63,20 @@ router.post('/hr/otp/verify', (req, res) => {
 
   const token = issueToken({ sub: hrUser.id, role: 'hr', email, name: hrUser.name, hrRole: hrUser.role }, '2h');
   res.json({ token, hrUser });
+});
+
+// ---- Kiosk: HR activates a shared gate tablet for one location (BRD R20) ----
+// A kiosk token is long-lived (this is a semi-permanent device setup, not a personal
+// session) and scoped to exactly one location — every kiosk endpoint trusts that
+// location, never a client-supplied one, same "server decides" pattern as every other
+// punch check in this app.
+router.post('/kiosk/activate', requireAuth('hr'), (req, res) => {
+  const { locationId } = req.body || {};
+  const loc = db.prepare('SELECT * FROM locations WHERE id = ?').get(locationId);
+  if (!loc) return res.status(400).json({ error: 'Unknown location' });
+  const token = issueToken({ role: 'kiosk', locationId: loc.id, activatedBy: req.auth.sub }, '90d');
+  addAudit(req.auth.email || req.auth.sub, 'kiosk_activated', `Kiosk activated for location ${loc.name}`);
+  res.json({ token, location: loc });
 });
 
 module.exports = router;
