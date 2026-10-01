@@ -6,15 +6,11 @@
 //   punch in + punch out, under 4h     -> 0.5  (same threshold as the app's calendar)
 //   punch in, no punch out             -> 0
 //   approved missed-punch correction   -> 1  (overrides the above for that day)
-// Days are UTC calendar dates, matching how punches.js decides "today" today.
+// Days are IST calendar dates (services/time.js), the same as punches.js uses.
 const { db } = require('../db');
+const { dayOf, monthRange } = require('./time');
 
 const HALF_DAY_HOURS = 4;
-
-function monthRange(month) {
-  const [y, m] = month.split('-').map(Number);
-  return { from: Date.UTC(y, m - 1, 1), to: Date.UTC(y, m, 1) };
-}
 
 function dayValue(ins, outs) {
   if (!ins.length) return 0;
@@ -37,7 +33,7 @@ function systemDays(month, workerScope) {
 
   const byWorkerDay = new Map();
   for (const p of punches) {
-    const day = new Date(p.ts).toISOString().slice(0, 10);
+    const day = dayOf(p.ts);
     const key = p.worker_id + '|' + day;
     if (!byWorkerDay.has(key)) byWorkerDay.set(key, { workerId: p.worker_id, day, vendorId: null, ins: [], outs: [] });
     const e = byWorkerDay.get(key);

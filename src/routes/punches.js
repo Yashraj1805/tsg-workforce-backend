@@ -8,7 +8,7 @@ const gemini = require('../services/geminiClient');
 
 const router = express.Router();
 
-function todayStr(ts) { return new Date(ts).toISOString().slice(0, 10); }
+const { sqlDay } = require('../services/time');
 
 // ---- Worker: punch in/out — every check here runs server-side against server-held
 // data (BRD: "A punch is saved only if location, face and phone pass the server
@@ -50,8 +50,7 @@ router.post('/', requireAuth('worker'), async (req, res) => {
   }
 
   const now = Date.now(); // server time, never trust a client-supplied timestamp
-  const today = todayStr(now);
-  const todaysPunches = db.prepare("SELECT * FROM punches WHERE worker_id = ? AND result = 'ok' AND date(ts / 1000, 'unixepoch') = date(? / 1000, 'unixepoch') ORDER BY ts")
+  const todaysPunches = db.prepare(`SELECT * FROM punches WHERE worker_id = ? AND result = 'ok' AND ${sqlDay('ts')} = ${sqlDay('?')} ORDER BY ts`)
     .all(w.id, now);
   const hasIn = todaysPunches.some(p => p.type === 'in');
   const hasOut = todaysPunches.some(p => p.type === 'out');
@@ -130,7 +129,7 @@ router.get('/', requirePermission('punches.read'), (req, res) => {
   let sql = `SELECT punches.*, workers.name AS worker_name FROM punches LEFT JOIN workers ON workers.id = punches.worker_id WHERE ${scope.sql}`;
   const args = [...scope.args];
   if (workerId) { sql += ' AND punches.worker_id = ?'; args.push(workerId); }
-  if (date) { sql += " AND date(punches.ts / 1000, 'unixepoch') = ?"; args.push(date); }
+  if (date) { sql += ` AND ${sqlDay('punches.ts')} = ?`; args.push(date); }
   if (result) { sql += ' AND punches.result = ?'; args.push(result); }
   sql += ' ORDER BY punches.ts DESC LIMIT 500';
   res.json(db.prepare(sql).all(...args));

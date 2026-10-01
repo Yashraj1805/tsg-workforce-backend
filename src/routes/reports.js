@@ -9,7 +9,7 @@ const { systemDays, daysByVendor, isLocked } = require('../services/attendance')
 
 const router = express.Router();
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
-const currentMonth = () => new Date().toISOString().slice(0, 7);
+const { currentMonth } = require('../services/time');
 const round = (n) => Math.round(n * 10) / 10;
 
 // Vendors the caller may see: a vendor coordinator only their own; others all.

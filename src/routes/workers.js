@@ -4,6 +4,7 @@ const { db, addAudit } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { workerScopeSql } = require('../rbac');
 const setu = require('../services/setuClient');
+const time = require('../services/time');
 const { namesMatch } = require('../services/nameMatch');
 const { checkDocument, checkFace } = require('../services/identityChecks');
 
@@ -44,7 +45,7 @@ router.put('/me', requireAuth('worker'), (req, res) => {
       return res.status(400).json({ error: 'Selected vendor does not exist — ask HR to add it first' });
     }
     // R01: no new registrations under a vendor that's deactivated or out of contract.
-    const today = new Date().toISOString().slice(0, 10);
+    const today = time.today();
     if (vendor && vendor.id !== w.vendor_id && (vendor.status !== 'active' || (vendor.contract_end && vendor.contract_end < today) || (vendor.contract_start && vendor.contract_start > today))) {
       return res.status(400).json({ error: `${vendor.name} has no active contract — choose another vendor or ask HR` });
     }
@@ -242,7 +243,7 @@ router.post('/:id/exit', requirePermission('workers.manage'), (req, res) => {
   if (!w) return res.status(404).json({ error: 'Not found' });
   if (w.status === 'exited') return res.status(400).json({ error: 'Worker has already exited' });
   const blacklist = !!body.blacklist;
-  const exitDate = body.exitDate || new Date().toISOString().slice(0, 10);
+  const exitDate = body.exitDate || time.today();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(exitDate)) return res.status(400).json({ error: 'exitDate must be YYYY-MM-DD' });
   db.prepare("UPDATE workers SET status = 'exited', blacklisted = ?, exit_date = ?, exit_reason = ? WHERE id = ?").run(blacklist ? 1 : 0, exitDate, reason, w.id);
   logEvent(w.id, req.user, blacklist ? 'exit_blacklisted' : 'exit', `Exited on ${exitDate}${blacklist ? ', blacklisted (Aadhaar, PAN and face can never register again)' : ''}`, reason);
