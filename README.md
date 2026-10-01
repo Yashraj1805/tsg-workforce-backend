@@ -9,36 +9,29 @@ moves every security-critical check — geofence distance, GPS accuracy, one-pun
 device binding, server timestamps — onto the server, where the BRD requires them to be
 (a phone can lie about its own GPS; it can't lie to a server computing distance itself).
 
-## What's real here vs. still open
+## What's built (all BRD v1.0 requirements R01–R21 + the proposal's processes)
 
-**Working and tested** (see "Smoke-tested" below):
-- Worker OTP login/registration, HR OTP login
-- Server-side punch-in/out: recomputes distance itself, enforces the worker's *stored*
-  location (not whatever the client claims), rejects bad accuracy, blocks a second
-  device without HR approval, enforces one in/one out per day, stamps server time
-- HR approval workflow, vendor/location masters, regularisation with maker≠checker
-  enforcement (BR-08), full audit log
-- Setu DigiLocker (Aadhaar) + PAN verification client, built against Setu's actual
-  current API docs (confirmed 2026-09-30) — request/response shapes are real, not
-  guessed. **Needs real credentials to actually call Setu** (see Setup).
+Every security check runs here on the server — the app only reports what the phone sees.
 
-**Still open — same gaps flagged earlier, now scoped against real code:**
-- **Face-match/liveness on punch selfies** — not implemented. Setu's quote never
-  confirmed they offer this; the `/api/punches` endpoint stores the selfie but doesn't
-  verify it against anything yet. This is still the single biggest unaddressed piece.
-- **OTP delivery** — OTPs are generated and verified for real, but not actually sent.
-  In dev mode the code is logged to the server console and returned in the API
-  response (`devOtp`). Needs an SMS gateway (worker mobiles) and email provider (HR)
-  — same unsourced dependency as before.
-- **The Capacitor app doesn't call this yet** — `tsg-workforce-pilot`'s `www/app.js`
-  still reads/writes `localStorage` directly. Pointing it at this backend (fetch calls,
-  token storage, replacing the mock KYC screen with the real DigiLocker redirect flow)
-  is the next concrete step and hasn't been started.
-- Mock-GPS/rooted-device detection, HRMS/Zoho/WATI integration, Excel/PDF report
-  exports, hosting/backups/DPDP legal sign-off — unchanged from the earlier gap list.
-- HR login currently auto-creates any verified company email as an HR user on first
-  login (see `routes/auth.js`) — fine for dev testing, but restrict this to a
-  pre-approved allowlist before anything resembling go-live.
+| Area | What it does | Where |
+|---|---|---|
+| Roles (BRD §5) | 8 admin roles + worker, each scoped to its site / vendor / team | `src/rbac.js` |
+| Registration (R04–R06, §10) | Aadhaar Secure QR decode (UIDAI signature check), PAN photo OCR, DigiLocker OTP, name matching, duplicate + blacklist on Aadhaar / PAN / face, live one-face photo check, versioned consent, jobs master, site set by GPS, Site HR assisted registration | `routes/kyc.js`, `routes/workers.js`, `services/identityChecks.js`, `routes/assisted.js` |
+| Approval (R07, R08, §12) | needs Aadhaar + PAN verified and a clean face check (or HR's note); reporting manager required | `routes/workers.js` |
+| Punching (R09–R11, R19, R20) | geofence, accuracy, one in / one out (IST days), server time, device binding, face match + spoof check, fake-GPS (phone mock flag + impossible travel), Security alerts, offline punch with tamper-proof time, gate tablet | `routes/punches.js`, `routes/kiosk.js`, `services/alerts.js` |
+| HR (R13, R14, §13) | missed-punch maker ≠ checker, transfer / exit / blacklist with history, phone change, manager change requests, gate check | `routes/regularisations.js`, `routes/workers.js`, `routes/workerRequests.js` |
+| Reports (R15, R16, R21, §16) | live dashboard with filters, Excel attendance / muster / vendor bill, month lock, 7 scheduled emails with Excel, WhatsApp copy | `routes/reports.js`, `services/reports.js`, `services/emailReports.js` |
+| Audit (R17, R18) | every change, login, logout, failed login; admin logout after 15 min idle | `services/sessions.js` |
+| Data (§9) | full Aadhaar never stored; daily backup | `services/backup.js` |
+
+**Needs something outside the code before go-live** (all wired, just switched off until set in `.env`):
+- **Setu** (`SETU_*`) — real Aadhaar (DigiLocker) and PAN verification. Until then the dev-only "skip KYC" button works and real-mode rules are off.
+- **UIDAI offline-verification certificate** (`AADHAAR_QR_CERT_PATH`) — without it Aadhaar QRs are decoded but their signature isn't checked.
+- **SMS gateway** (`SMS_WEBHOOK_URL`) and **SMTP** (`SMTP_*`) — OTPs, approval SMS, alerts and report emails are only logged (dev servers also save emails to `data/outbox/*.eml`).
+- **WATI** (`WATI_*`) — WhatsApp copy of the manager's email.
+- **Gemini** (`GEMINI_API_KEY`) — face match, spoof check, photo check, PAN OCR. Not a certified biometric API (see `geminiClient.js`); swap for a licensed one when procured.
+- Hosting in India on an encrypted volume, `BACKUP_DIR` on separate storage, HTTPS, and legal sign-off of the consent text (`src/registrationOptions.js`, marked DRAFT).
+- Production: set `NODE_ENV=production` and `ADMIN_BOOTSTRAP_EMAILS` (see "Roles and access").
 
 ## Setup
 
@@ -82,15 +75,20 @@ that's not the same as having actually called their sandbox.
 
 | Area | Endpoints |
 |---|---|
-| Auth | `POST /api/auth/worker/otp/{request,verify}`, `POST /api/auth/hr/otp/{request,verify}` |
-| Worker profile | `GET/PUT /api/workers/me`, `POST /api/workers/me/submit` |
-| HR: worker review | `GET /api/workers`, `POST /api/workers/:id/{approve,send-back,reject,exit,transfer}` |
-| KYC | `POST /api/kyc/digilocker/init`, `GET /api/kyc/digilocker/:id/complete`, `POST /api/kyc/pan/verify` |
-| Punches | `POST /api/punches` (worker), `GET /api/punches/me`, `GET /api/punches` (HR, filterable by `workerId`/`date`/`result`) |
-| Masters | `GET/POST/PUT /api/vendors`, `GET/POST/PUT /api/locations` |
+| Auth | `POST /api/auth/worker/otp/{request,verify}`, `POST /api/auth/hr/otp/{request,verify}`, `POST /api/auth/logout`, `GET /api/auth/me` |
+| Worker profile | `GET/PUT /api/workers/me`, `POST /api/workers/me/{submit,consent,site-from-gps}`, `GET /api/registration-options` |
+| HR: workers | `GET /api/workers`, `GET /api/workers/:id[/history]`, `POST /api/workers/:id/{approve,send-back,reject,exit,transfer,reset-device}`, `PUT /api/workers/:id/reporting-manager`, `GET /api/workers/gate-check` |
+| Assisted registration | `POST /api/assisted/otp/{request,verify}` (Site HR) |
+| KYC | `POST /api/kyc/aadhaar-qr`, `POST /api/kyc/pan/{photo,verify}`, `POST /api/kyc/digilocker/init`, `GET /api/kyc/digilocker/:id/complete` |
+| Punches | `POST /api/punches`, `POST /api/punches/offline`, `GET /api/punches/me`, `GET /api/punches` (HR) |
+| Gate tablet | `GET/POST/PUT /api/kiosks`, `POST /api/kiosks/:id/new-code`, `POST /api/kiosk/pair`, `GET /api/kiosk/{me,candidates}`, `POST /api/kiosk/punch` |
+| Masters | `GET/POST/PUT /api/{vendors,locations,jobs}` |
 | Regularisation | `POST /api/regularisations`, `GET /api/regularisations`, `POST /api/regularisations/:id/decide` |
-| Audit | `GET /api/audit` |
-| Admin users | `GET /api/auth/me`, `GET/POST/PUT /api/admin-users`, `GET /api/admin-users/roles` |
+| Change requests | `GET/POST /api/worker-requests`, `POST /api/worker-requests/:id/{accept,complete,reject}` |
+| Reports | `GET /api/reports/{dashboard,filters,attendance.xlsx,muster.xlsx,vendor-bill,vendor-bill.xlsx}`, `PUT /api/reports/vendor-invoices`, `POST/DELETE /api/reports/attendance-lock` |
+| Automatic emails | `GET /api/email-reports`, `PUT /api/email-reports/:key`, `POST /api/email-reports/:key/send-now` |
+| Audit / system | `GET /api/audit`, `GET/POST /api/system/backups` |
+| Admin users | `GET/POST/PUT /api/admin-users`, `GET /api/admin-users/roles` |
 
 All non-auth endpoints require `Authorization: Bearer <token>` from the matching OTP
 verify call.
