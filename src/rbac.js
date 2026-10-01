@@ -51,6 +51,8 @@ const PERMISSIONS = {
   'billing.read':          ['mis_finance', 'central_hr', 'vendor_coordinator'],
   // R16 dashboard + Excel reports (BRD 16), always within the caller's scope.
   'reports.read':          ['reporting_manager', 'site_hr', 'central_hr', 'location_head', 'vendor_coordinator', 'mis_finance'],
+  // R15: "Automatic emails — set once by central HR" (times, receivers, on/off).
+  'emails.manage':         ['central_hr'],
   'billing.write':         ['mis_finance'],
   'attendance.lock':       ['central_hr'],
   // BRD §7.8: Site HR registers a worker on their own phone, worker present (face + OTP).

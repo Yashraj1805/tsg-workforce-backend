@@ -40,11 +40,29 @@ async function sendEmail(to, subject, text, attachments) {
   const recipients = [].concat(to).filter(Boolean);
   if (!recipients.length) return { ok: false, skipped: true };
   const t = smtp();
-  if (!t) { console.log(`[Email not sent — no SMTP_HOST] to ${recipients.join(', ')}: ${subject}`); return { ok: false, skipped: true }; }
+  if (!t) {
+    console.log(`[Email not sent — no SMTP_HOST] to ${recipients.join(', ')}: ${subject}`);
+    // Dev servers keep a copy in data/outbox/*.eml (opens in Outlook) so the reports can be
+    // checked before an SMTP account exists.
+    if (process.env.NODE_ENV !== 'production') saveToOutbox(recipients, subject, text, attachments);
+    return { ok: false, skipped: true };
+  }
   try {
     await t.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to: recipients.join(', '), subject, text, attachments });
     return { ok: true };
   } catch (e) { console.error('[Email failed]', subject, e.message); return { ok: false, error: e.message }; }
+}
+
+function saveToOutbox(to, subject, text, attachments) {
+  const fs = require('node:fs'), path = require('node:path');
+  const dir = path.join(process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data'), 'outbox');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const t = require('nodemailer').createTransport({ streamTransport: true, buffer: true });
+    t.sendMail({ from: 'tsg-workforce@localhost', to: to.join(', '), subject, text, attachments }, (err, info) => {
+      if (!err) fs.writeFileSync(path.join(dir, `${Date.now()}-${subject.replace(/[^\w-]+/g, '_').slice(0, 60)}.eml`), info.message);
+    });
+  } catch (e) { /* preview only */ }
 }
 
 // R21: WhatsApp copy of a report. WATI's "send session message" endpoint; works only once
