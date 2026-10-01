@@ -97,13 +97,43 @@ router.get('/:id', requirePermission('workers.read'), (req, res) => {
   res.json({ ...w, location, vendor });
 });
 
+// R08: every approved worker is linked to one reporting manager (TSG employee) with an
+// email — that email is also what scopes the reporting_manager role (rbac.js) and who
+// gets the daily team email.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function readManager(body) {
+  const name = (body.reportingManagerName || '').trim();
+  const email = (body.reportingManagerEmail || '').trim().toLowerCase();
+  if (!name || !EMAIL_RE.test(email)) return { error: 'Reporting manager name and a valid email are required (R08)' };
+  return { name, email };
+}
+
 router.post('/:id/approve', requirePermission('workers.approve'), (req, res) => {
   const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
   if (w.status !== 'pending') return res.status(400).json({ error: `Cannot approve a worker with status "${w.status}"` });
-  db.prepare("UPDATE workers SET status = 'approved', send_back_reason = NULL WHERE id = ?").run(w.id);
-  addAudit(req.auth.email, 'approve_registration', `Approved ${w.name} (${w.id})`);
+  const mgr = readManager(req.body || {});
+  if (mgr.error) return res.status(400).json({ error: mgr.error });
+  db.prepare("UPDATE workers SET status = 'approved', send_back_reason = NULL, reporting_manager_name = ?, reporting_manager_email = ? WHERE id = ?")
+    .run(mgr.name, mgr.email, w.id);
+  addAudit(req.auth.email, 'approve_registration', `Approved ${w.name} (${w.id}), reporting manager ${mgr.name} <${mgr.email}>`);
   res.json(getWorker(w.id));
+});
+
+router.put('/:id/reporting-manager', requirePermission('workers.manage'), (req, res) => {
+  const w = getScopedWorker(req.user, req.params.id);
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  const mgr = readManager(req.body || {});
+  if (mgr.error) return res.status(400).json({ error: mgr.error });
+  db.prepare('UPDATE workers SET reporting_manager_name = ?, reporting_manager_email = ? WHERE id = ?').run(mgr.name, mgr.email, w.id);
+  addAudit(req.auth.email, 'change_reporting_manager', `${w.name}: ${w.reporting_manager_email || '-'} -> ${mgr.email}`);
+  res.json(getWorker(w.id));
+});
+
+// Previously-used managers, so HR can pick instead of retyping the same email.
+router.get('/meta/reporting-managers', requirePermission('workers.approve'), (req, res) => {
+  res.json(db.prepare(`SELECT reporting_manager_name AS name, reporting_manager_email AS email, COUNT(*) AS workers
+    FROM workers WHERE reporting_manager_email IS NOT NULL GROUP BY reporting_manager_email ORDER BY name`).all());
 });
 
 router.post('/:id/send-back', requirePermission('workers.approve'), (req, res) => {

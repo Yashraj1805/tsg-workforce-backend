@@ -143,6 +143,7 @@ addColumnIfMissing('hr_users', 'location_id', 'TEXT REFERENCES locations(id)');
 addColumnIfMissing('hr_users', 'vendor_id', 'TEXT REFERENCES vendors(id)');
 addColumnIfMissing('hr_users', 'status', "TEXT NOT NULL DEFAULT 'active'");
 addColumnIfMissing('workers', 'reporting_manager_email', 'TEXT');
+addColumnIfMissing('workers', 'reporting_manager_name', 'TEXT'); // R08
 addColumnIfMissing('regularisations', 'maker_id', 'TEXT');
 addColumnIfMissing('regularisations', 'checker_id', 'TEXT');
 
