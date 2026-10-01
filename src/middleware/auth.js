@@ -65,4 +65,19 @@ function requirePermission(permission) {
   };
 }
 
-module.exports = { issueToken, requireAuth, requirePermission };
+// R20 gate tablet: a paired kiosk's token. The kiosk row must still be active and on the
+// same device it was paired on.
+function requireKiosk(req, res, next) {
+  const { payload, error } = readToken(req);
+  if (error) return res.status(401).json({ error });
+  if (payload.role !== 'kiosk') return res.status(403).json({ error: 'Gate tablet only' });
+  const kiosk = db.prepare('SELECT * FROM kiosks WHERE id = ?').get(payload.sub);
+  if (!kiosk || kiosk.status !== 'active') return res.status(401).json({ error: 'This gate tablet has been retired — pair it again' });
+  const deviceId = req.headers['x-device-id'];
+  if (kiosk.device_id && deviceId && kiosk.device_id !== deviceId) return res.status(403).json({ error: 'This tablet is not the one paired for this gate' });
+  req.auth = payload;
+  req.kiosk = kiosk;
+  next();
+}
+
+module.exports = { issueToken, requireAuth, requirePermission, requireKiosk };

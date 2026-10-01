@@ -37,7 +37,7 @@ function checkSession(payload) {
   if (!s || s.user_id !== payload.sub) return 'Session not found — please sign in again';
   if (s.ended_at) return s.end_reason === 'idle_timeout' ? 'Signed out after 15 minutes without use — please sign in again' : 'You have signed out — please sign in again';
   const now = Date.now();
-  if (s.kind !== 'worker' && now - s.last_seen_at > ADMIN_IDLE_MS) {
+  if ((s.kind === 'admin' || s.kind === 'assisted') && now - s.last_seen_at > ADMIN_IDLE_MS) {
     endSession(s.id, 'idle_timeout');
     return 'Signed out after 15 minutes without use — please sign in again';
   }

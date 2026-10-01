@@ -59,6 +59,8 @@ const PERMISSIONS = {
   'workers.register_assisted': ['site_hr'],
   // Proposal: "No HR approval, no entry. Security at the gate checks the portal."
   'workers.gatecheck':     ['security', 'site_hr', 'central_hr', 'location_head'],
+  // R20 gate tablets: set up / pair / retire a site's kiosk.
+  'kiosks.manage':         ['system_admin', 'central_hr'],
 };
 
 // Security's punch access is limited to blocked attempts (BRD: "View blocked punches").

@@ -23,6 +23,7 @@ app.use('/api/admin-users', require('./routes/users'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/assisted', require('./routes/assisted'));
 app.use('/api/email-reports', require('./routes/emailReports'));
+app.use('/api', require('./routes/kiosk')); // /api/kiosks (admin), /api/kiosk/* (gate tablet)
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 // eslint-disable-next-line no-unused-vars

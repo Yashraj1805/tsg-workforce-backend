@@ -31,7 +31,7 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   };
 
   // Device binding (R03: one phone per worker; change needs HR approval).
-  if (w.device_id && deviceId && w.device_id !== deviceId) {
+  if (!opts.kiosk && w.device_id && deviceId && w.device_id !== deviceId) {
     return block('device_mismatch', 403, 'This device is not the one registered for this worker — ask HR to approve a device change');
   }
 
@@ -89,7 +89,17 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   // mismatch — or a "photo of a screen/photo" spoof verdict (BRD §8: "Face match with
   // live check") — only blocks if a second, independent call agrees.
   let faceMatchNote = null;
-  if (gemini.isConfigured() && w.photo_data_url) {
+  if (opts.kiosk) {
+    // R20 gate tablet: no personal phone to bind, so the face is the only proof of who is
+    // punching — it must positively match, and if it can't be checked the punch is refused.
+    if (!gemini.isConfigured() || !w.photo_data_url) return { ok: false, status: 503, body: { error: 'Face check is not available on the gate tablet right now — punch on your phone or ask Site HR' } };
+    const r = await gemini.compareFaces(w.photo_data_url, selfieDataUrl);
+    if (!r.ok) return { ok: false, status: 503, body: { error: 'Face check failed — try again' } };
+    const kNote = `[gate tablet ${opts.kiosk.name}] samePerson=${r.samePerson} confidence=${r.confidence} spoofSuspected=${r.spoofSuspected}: ${r.reason}`;
+    if (r.spoofSuspected) return block('spoof_suspected', 422, 'This looks like a photo of a photo or a screen — look at the camera', kNote, distanceM);
+    if (!r.samePerson || r.confidence < 0.75) return block('face_mismatch', 422, 'Face did not match the selected worker', kNote, distanceM);
+    faceMatchNote = kNote;
+  } else if (gemini.isConfigured() && w.photo_data_url) {
     const first = await gemini.compareFaces(w.photo_data_url, selfieDataUrl);
     if (first.ok) {
       const firstNote = `samePerson=${first.samePerson} confidence=${first.confidence} spoofSuspected=${first.spoofSuspected}: ${first.reason}`;
@@ -117,7 +127,7 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   }
 
   // Bind the phone on first successful punch (R03).
-  if (!w.device_id && deviceId) db.prepare('UPDATE workers SET device_id = ? WHERE id = ?').run(deviceId, w.id);
+  if (!opts.kiosk && !w.device_id && deviceId) db.prepare('UPDATE workers SET device_id = ? WHERE id = ?').run(deviceId, w.id);
 
   const id = crypto.randomUUID();
   // vendor_id/location_id stamped at punch time so the vendor bill check (R16) bills the
@@ -225,3 +235,4 @@ router.get('/', requirePermission('punches.read'), (req, res) => {
 });
 
 module.exports = router;
+module.exports.evaluatePunch = evaluatePunch; // used by the gate tablet (routes/kiosk.js)
