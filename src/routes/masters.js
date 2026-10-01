@@ -112,9 +112,14 @@ router.put('/locations/:id', requirePermission('masters.write'), (req, res) => {
   const l = db.prepare('SELECT * FROM locations WHERE id = ?').get(req.params.id);
   if (!l) return res.status(404).json({ error: 'Not found' });
   const { name, brand, lat, lng, radius, accuracyLimit } = req.body || {};
+  // BRD §11 screen 9: weekly off day shows grey on the worker calendar (0 = Sunday … 6, null = none).
+  const wo = (req.body || {}).weeklyOff;
+  if (wo !== undefined && wo !== null && !(Number.isInteger(wo) && wo >= 0 && wo <= 6)) return res.status(400).json({ error: 'weeklyOff must be 0 (Sunday) to 6 (Saturday) or null' });
+  const v = (x) => (x === undefined ? null : x);
   db.prepare('UPDATE locations SET name=COALESCE(?,name), brand=COALESCE(?,brand), lat=COALESCE(?,lat), lng=COALESCE(?,lng), radius=COALESCE(?,radius), accuracy_limit=COALESCE(?,accuracy_limit) WHERE id=?')
-    .run(name, brand, lat, lng, radius, accuracyLimit, req.params.id);
-  addAudit(req.auth.email, 'edit_location', `${l.name} -> ${lat ?? l.lat}, ${lng ?? l.lng}, radius ${radius ?? l.radius}m`);
+    .run(v(name), v(brand), v(lat), v(lng), v(radius), v(accuracyLimit), req.params.id);
+  if (wo !== undefined) db.prepare('UPDATE locations SET weekly_off = ? WHERE id = ?').run(wo, l.id);
+  addAudit(req.auth.email, 'edit_location', `${l.name} -> ${lat ?? l.lat}, ${lng ?? l.lng}, radius ${radius ?? l.radius}m${wo !== undefined ? `, weekly off ${wo ?? 'none'}` : ''}`);
   res.json(db.prepare('SELECT * FROM locations WHERE id = ?').get(req.params.id));
 });
 

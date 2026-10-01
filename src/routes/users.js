@@ -37,7 +37,8 @@ router.get('/', requirePermission('users.manage'), (req, res) => {
 });
 
 router.post('/', requirePermission('users.manage'), (req, res) => {
-  const { email, name, role, locationId, vendorId } = req.body || {};
+  const { email, name, role, locationId, vendorId, phone } = req.body || {};
+  if (phone && !/^\d{10}$/.test(phone)) return res.status(400).json({ error: 'Phone must be a 10-digit mobile number' });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '')) return res.status(400).json({ error: 'Valid email required' });
   if (!name) return res.status(400).json({ error: 'name is required' });
   if (!isAdminRole(role)) return res.status(400).json({ error: `role must be one of: ${Object.keys(ROLES).join(', ')}` });
@@ -46,8 +47,8 @@ router.post('/', requirePermission('users.manage'), (req, res) => {
   if (scope.error) return res.status(400).json({ error: scope.error });
 
   const id = crypto.randomUUID();
-  db.prepare('INSERT INTO hr_users (id, email, name, role, location_id, vendor_id, status, created_at) VALUES (?,?,?,?,?,?,?,?)')
-    .run(id, email.trim(), name.trim(), role, scope.locationId, scope.vendorId, 'active', Date.now());
+  db.prepare('INSERT INTO hr_users (id, email, name, role, location_id, vendor_id, phone, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(id, email.trim(), name.trim(), role, scope.locationId, scope.vendorId, phone || null, 'active', Date.now());
   addAudit(req.user.email, 'add_admin_user', `${email} as ${role}${scope.locationId ? ` @location ${scope.locationId}` : ''}${scope.vendorId ? ` @vendor ${scope.vendorId}` : ''}`);
   res.status(201).json(getUser(id));
 });
@@ -67,8 +68,10 @@ router.put('/:id', requirePermission('users.manage'), (req, res) => {
   const scope = resolveScope(role, body.locationId !== undefined ? body.locationId : u.location_id, body.vendorId !== undefined ? body.vendorId : u.vendor_id);
   if (scope.error) return res.status(400).json({ error: scope.error });
 
-  db.prepare('UPDATE hr_users SET name = ?, role = ?, location_id = ?, vendor_id = ?, status = ? WHERE id = ?')
-    .run((body.name || u.name).trim(), role, scope.locationId, scope.vendorId, status, u.id);
+  if (body.phone && !/^\d{10}$/.test(body.phone)) return res.status(400).json({ error: 'Phone must be a 10-digit mobile number' });
+  const phone = body.phone !== undefined ? (body.phone || null) : u.phone;
+  db.prepare('UPDATE hr_users SET name = ?, role = ?, location_id = ?, vendor_id = ?, status = ?, phone = ? WHERE id = ?')
+    .run((body.name || u.name).trim(), role, scope.locationId, scope.vendorId, status, phone, u.id);
   const changes = [];
   if (role !== u.role) changes.push(`role ${u.role} -> ${role}`);
   if (status !== u.status) changes.push(`status ${u.status} -> ${status}`);

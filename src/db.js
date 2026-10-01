@@ -186,6 +186,9 @@ addColumnIfMissing('workers', 'consent_at', 'INTEGER');
 addColumnIfMissing('workers', 'photo_check_note', 'TEXT');
 addColumnIfMissing('workers', 'face_check_status', 'TEXT'); // clear | review | skipped | blocked
 addColumnIfMissing('workers', 'bank_passbook_data_url', 'TEXT');
+// BRD §11 screen 9 (grey = off day) and screen 10 (missed punch "calls site HR").
+addColumnIfMissing('locations', 'weekly_off', 'INTEGER'); // 0 = Sunday … 6 = Saturday; NULL = no weekly off
+addColumnIfMissing('hr_users', 'phone', 'TEXT');
 if (!db.prepare('SELECT 1 FROM jobs LIMIT 1').get()) {
   // BRD §4 scope list; System Admin can rename/add/retire these.
   const seed = [['Washing staff', 'धुलाई कर्मचारी', '🚿'], ['Driver', 'ड्राइवर', '🚗'], ['Security guard', 'सुरक्षा गार्ड', '🛡️'],

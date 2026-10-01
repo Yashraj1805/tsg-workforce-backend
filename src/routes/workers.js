@@ -21,9 +21,11 @@ router.get('/me', requireAuth('worker'), (req, res) => {
   if (!w) return res.status(404).json({ error: 'Worker not found' });
   // Include the assigned location's coordinates/radius so the app can show a
   // pre-punch GPS/geofence check without needing a separate HR-only endpoint.
-  const location = w.location_id ? db.prepare('SELECT id, name, brand, lat, lng, radius, accuracy_limit FROM locations WHERE id = ?').get(w.location_id) : null;
-  const vendor = w.vendor_id ? db.prepare('SELECT id, name FROM vendors WHERE id = ?').get(w.vendor_id) : null;
-  res.json({ ...w, location, vendor });
+  const location = w.location_id ? db.prepare('SELECT id, name, brand, lat, lng, radius, accuracy_limit, weekly_off FROM locations WHERE id = ?').get(w.location_id) : null;
+  const vendor = w.vendor_id ? db.prepare('SELECT id, name, phone FROM vendors WHERE id = ?').get(w.vendor_id) : null;
+  // BRD §11 screen 10: "Missed punch — worker cannot edit. Button calls site HR."
+  const siteHr = w.location_id ? db.prepare("SELECT name, phone FROM hr_users WHERE role = 'site_hr' AND status = 'active' AND location_id = ? AND phone IS NOT NULL ORDER BY created_at LIMIT 1").get(w.location_id) : null;
+  res.json({ ...w, location, vendor, siteHr: siteHr || null });
 });
 
 router.put('/me', requireAuth('worker'), async (req, res) => {
