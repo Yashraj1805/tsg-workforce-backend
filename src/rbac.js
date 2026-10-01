@@ -49,6 +49,8 @@ const PERMISSIONS = {
   // R16 vendor bill check: Finance enters invoice days; vendor coordinators see their own
   // vendor's system days (scope applies). Month lock is Central HR's month-end step.
   'billing.read':          ['mis_finance', 'central_hr', 'vendor_coordinator'],
+  // R16 dashboard + Excel reports (BRD 16), always within the caller's scope.
+  'reports.read':          ['reporting_manager', 'site_hr', 'central_hr', 'location_head', 'vendor_coordinator', 'mis_finance'],
   'billing.write':         ['mis_finance'],
   'attendance.lock':       ['central_hr'],
   // BRD §7.8: Site HR registers a worker on their own phone, worker present (face + OTP).

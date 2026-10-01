@@ -6,6 +6,7 @@ const { db, addAudit } = require('../db');
 const { requirePermission } = require('../middleware/auth');
 const { workerScopeSql, ROLE_SCOPE } = require('../rbac');
 const { systemDays, daysByVendor, isLocked } = require('../services/attendance');
+const reports = require('../services/reports');
 
 const router = express.Router();
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -81,6 +82,61 @@ router.get('/vendor-bill/:vendorId/workers', requirePermission('billing.read'), 
 
 // Finance records what the vendor invoiced. Only for a locked month — until Central HR
 // locks it, the system days can still change (late corrections).
+// ---- R16 dashboard + Excel reports (BRD §12, §16) ----
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function readFilters(q) {
+  return { brand: q.brand || null, locationId: q.locationId || null, vendorId: q.vendorId || null, jobId: q.jobId || null };
+}
+async function sendXlsx(res, filename, sheets) {
+  const buf = await reports.toXlsx(sheets);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buf);
+}
+
+router.get('/dashboard', requirePermission('reports.read'), (req, res) => {
+  const day = req.query.date || undefined;
+  if (day && !DATE_RE.test(day)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  res.json(reports.dashboard(workerScopeSql(req.user, 'w'), readFilters(req.query), day));
+});
+
+// Brands / locations / vendors / jobs available as filters to this user.
+router.get('/filters', requirePermission('reports.read'), (req, res) => {
+  const scope = workerScopeSql(req.user, 'w');
+  const locs = db.prepare(`SELECT DISTINCT l.id, l.name, l.brand FROM workers w JOIN locations l ON l.id = w.location_id WHERE ${scope.sql} ORDER BY l.name`).all(...scope.args);
+  const vendors = db.prepare(`SELECT DISTINCT v.id, v.name FROM workers w JOIN vendors v ON v.id = w.vendor_id WHERE ${scope.sql} ORDER BY v.name`).all(...scope.args);
+  const jobs = db.prepare('SELECT id, name FROM jobs ORDER BY sort, name').all();
+  res.json({ brands: [...new Set(locs.map(l => l.brand).filter(Boolean))].sort(), locations: locs, vendors, jobs });
+});
+
+router.get('/attendance.xlsx', requirePermission('reports.read'), async (req, res) => {
+  const { from, to } = req.query;
+  if (!DATE_RE.test(from || '') || !DATE_RE.test(to || '') || to < from) return res.status(400).json({ error: 'from and to (YYYY-MM-DD) are required' });
+  if ((Date.parse(to) - Date.parse(from)) / 86400000 > 92) return res.status(400).json({ error: 'At most 3 months at a time' });
+  const rows = reports.attendanceRows(workerScopeSql(req.user, 'w'), readFilters(req.query), from, to);
+  addAudit(req.user.email, 'report_download', `attendance ${from}..${to} (${rows.length} rows)`);
+  await sendXlsx(res, `attendance-${from}-to-${to}.xlsx`, [{ name: 'Attendance', columns: reports.ATTENDANCE_COLUMNS, rows }]);
+});
+
+router.get('/muster.xlsx', requirePermission('reports.read'), async (req, res) => {
+  const month = req.query.month || currentMonth();
+  if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
+  const m = reports.musterRows(workerScopeSql(req.user, 'w'), readFilters(req.query), month);
+  addAudit(req.user.email, 'report_download', `muster roll ${month} (${m.rows.length} workers)`);
+  await sendXlsx(res, `muster-roll-${month}.xlsx`, [{ name: `Muster ${month}`, ...reports.musterSheet(m) }]);
+});
+
+router.get('/vendor-bill.xlsx', requirePermission('billing.read'), async (req, res) => {
+  const month = req.query.month || currentMonth();
+  if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
+  const rows = billRows(req.user, month);
+  await sendXlsx(res, `vendor-bill-check-${month}.xlsx`, [{ name: 'Vendor bill check', columns: [
+    { header: 'Vendor', key: 'vendorName', width: 24 }, { header: 'GSTIN', key: 'gstin', width: 18 }, { header: 'Workers', key: 'workers', width: 9 },
+    { header: 'System days', key: 'systemDays', width: 12 }, { header: 'Invoice days', key: 'invoiceDays', width: 12 },
+    { header: 'Gap (invoice − system)', key: 'gap', width: 20 }, { header: 'Status', key: 'status', width: 14 }, { header: 'Invoice ref', key: 'invoiceRef', width: 14 },
+  ], rows }]);
+});
+
 router.put('/vendor-invoices', requirePermission('billing.write'), (req, res) => {
   const { vendorId, month, invoiceRef } = req.body || {};
   const invoiceDays = Number((req.body || {}).invoiceDays);
