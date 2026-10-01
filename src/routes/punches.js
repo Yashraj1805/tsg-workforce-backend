@@ -14,7 +14,7 @@ function todayStr(ts) { return new Date(ts).toISOString().slice(0, 10); }
 // checks" / "Server time is saved, not phone time"). The client cannot spoof the
 // worker's assigned location, the geofence radius, or the timestamp. ----
 router.post('/', requireAuth('worker'), async (req, res) => {
-  const { type, lat, lng, accuracy, selfieDataUrl, deviceId } = req.body || {};
+  const { type, lat, lng, accuracy, isMockLocation, selfieDataUrl, deviceId } = req.body || {};
   if (type !== 'in' && type !== 'out') return res.status(400).json({ error: 'type must be "in" or "out"' });
   if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng are required' });
   if (!selfieDataUrl) return res.status(400).json({ error: 'selfieDataUrl is required — live camera capture only (FR-K05/R09)' });
@@ -35,6 +35,17 @@ router.post('/', requireAuth('worker'), async (req, res) => {
   if (!loc) return res.status(400).json({ error: 'Worker has no assigned location — ask HR to fix this in the worker record' });
 
   const distanceM = Math.round(haversineMeters(lat, lng, loc.lat, loc.lng));
+
+  // R10 / BRD control "Fake GPS apps blocked". The client-side native check (see
+  // MockLocationPlugin.java) reports whether Android itself flagged the device's last
+  // location fix as coming from a mock provider — same limitation as any client-reported
+  // signal (a modified client could lie about it), but it's the same approach ride-hailing
+  // and attendance apps use, and it's still enforced here server-side rather than just
+  // shown in the UI, consistent with every other check on this route.
+  if (isMockLocation === true) {
+    logBlocked(w.id, type, lat, lng, accuracy, distanceM, selfieDataUrl, deviceId, 'fake_gps');
+    return res.status(422).json({ error: 'This device appears to be using a fake/mock GPS location — punch blocked', blocked: true, reason: 'fake_gps', distanceM, accuracy });
+  }
 
   if (accuracy != null && accuracy > loc.accuracy_limit) {
     logBlocked(w.id, type, lat, lng, accuracy, distanceM, selfieDataUrl, deviceId, 'low_accuracy');
