@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { db } = require('../db');
 const { can } = require('../rbac');
+const { checkSession } = require('../services/sessions');
 
 const SECRET = process.env.JWT_SECRET;
 if (!SECRET) throw new Error('JWT_SECRET is not set in .env — generate one (e.g. `openssl rand -hex 32`) before starting the server');
@@ -13,7 +14,13 @@ function readToken(req) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return { error: 'Missing Authorization: Bearer <token>' };
-  try { return { payload: jwt.verify(token, SECRET) }; } catch (e) { return { error: 'Invalid or expired token' }; }
+  let payload;
+  try { payload = jwt.verify(token, SECRET); } catch (e) { return { error: 'Invalid or expired token' }; }
+  // The session must still be live: ended by logout / idle timeout means the token is
+  // dead even if the JWT hasn't expired (R17/R18, services/sessions.js).
+  const sessionError = checkSession(payload);
+  if (sessionError) return { error: sessionError };
+  return { payload };
 }
 
 // Admin tokens only identify the user — their role and scope are re-read from hr_users on
