@@ -14,7 +14,8 @@
 //    run once against the frame detectFace locked onto, as part of the punch itself.
 
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
-const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+// GEMINI_BASE_URL is only for pointing at a proxy or a local test stub.
+const ENDPOINT = `${process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com'}/v1beta/models/${MODEL}:generateContent`;
 
 function isConfigured() {
   return !!process.env.GEMINI_API_KEY;
@@ -124,4 +125,25 @@ async function readPanCard(photoDataUrl) {
   );
 }
 
-module.exports = { compareFaces, detectFace, readPanCard, isConfigured };
+// R06 duplicate-face check: one new registrant photo vs a handful of existing workers'
+// photos in a single call. Returns the 1-based index of the matching candidate, or 0.
+async function findMatchingFace(probeDataUrl, candidateDataUrls) {
+  const probe = parseDataUrl(probeDataUrl);
+  const cands = candidateDataUrls.map(parseDataUrl);
+  return callGemini(
+    `Duplicate-registration check for a workplace ID system. The FIRST image is a new registrant's live photo. The next ${cands.length} images are existing registered people, numbered 1 to ${cands.length} in order. Photos may be rotated, differently lit or taken years apart. Decide whether any numbered person is the SAME PERSON as the first image, judging facial identity only (not clothes, background, glasses or hairstyle). Most of the time none match — answer 0 unless you are genuinely confident.`,
+    [probe, ...cands],
+    {
+      type: 'object',
+      properties: {
+        matchIndex: { type: 'integer', description: `1-${cands.length} for the matching person, 0 if none match` },
+        confidence: { type: 'number', description: '0 to 1, confidence in the matchIndex answer' },
+        reason: { type: 'string', description: 'one short sentence' },
+      },
+      required: ['matchIndex', 'confidence', 'reason'],
+    },
+    20000
+  );
+}
+
+module.exports = { compareFaces, detectFace, readPanCard, findMatchingFace, isConfigured };

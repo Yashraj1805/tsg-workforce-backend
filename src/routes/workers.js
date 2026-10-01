@@ -4,6 +4,7 @@ const { requireAuth, requirePermission } = require('../middleware/auth');
 const { workerScopeSql } = require('../rbac');
 const setu = require('../services/setuClient');
 const { namesMatch } = require('../services/nameMatch');
+const { checkDocument, checkFace } = require('../services/identityChecks');
 
 const router = express.Router();
 
@@ -59,7 +60,7 @@ router.put('/me', requireAuth('worker'), (req, res) => {
 
 function toCamel(snake) { return snake.replace(/_([a-z])/g, (_, c) => c.toUpperCase()); }
 
-router.post('/me/submit', requireAuth('worker'), (req, res) => {
+router.post('/me/submit', requireAuth('worker'), async (req, res) => {
   const w = getWorker(req.auth.sub);
   if (!w) return res.status(404).json({ error: 'Worker not found' });
   if (!w.aadhaar_verified || !w.pan_verified) {
@@ -80,10 +81,26 @@ router.post('/me/submit', requireAuth('worker'), (req, res) => {
   if (!w.name || !w.location_id || !w.vendor_id) {
     return res.status(400).json({ error: 'Complete your profile (name, vendor, location) before submitting' });
   }
+  // R06 / blacklist, re-checked at submit: documents may have been registered by
+  // someone else since they were verified, and the face can only be checked now that
+  // the registration photo is final.
+  for (const [field, value] of [['aadhaar_key', w.aadhaar_key], ['pan_number', w.pan_number]]) {
+    const hit = checkDocument(field, value, w.id);
+    if (hit) return refuseSubmit(res, w, hit);
+  }
+  const face = await checkFace(w);
+  db.prepare('UPDATE workers SET face_check_note = ? WHERE id = ?').run(face.note, w.id);
+  if (!face.ok) return refuseSubmit(res, w, { ...face, audit: face.note });
+
   db.prepare("UPDATE workers SET status = 'pending' WHERE id = ?").run(w.id);
-  addAudit(w.mobile, 'submit_registration', `Worker ${w.name} submitted for HR approval`);
+  addAudit(w.mobile, 'submit_registration', `Worker ${w.name} submitted for HR approval (${face.note})`);
   res.json(getWorker(w.id));
 });
+
+function refuseSubmit(res, w, hit) {
+  addAudit(w.mobile, hit.kind === 'blacklisted' ? 'blacklist_hit' : 'duplicate_blocked', hit.audit);
+  return res.status(hit.status).json({ error: hit.error, blocked: hit.kind });
+}
 
 // ---- HR: review and manage workers ----
 // Every admin read goes through the caller's scope (rbac.js) — e.g. a site HR only

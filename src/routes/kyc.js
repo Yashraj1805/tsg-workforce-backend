@@ -6,8 +6,16 @@ const setu = require('../services/setuClient');
 const gemini = require('../services/geminiClient');
 const { parseAadhaarQr, aadhaarKey } = require('../services/aadhaarQr');
 const { namesMatch } = require('../services/nameMatch');
+const { checkDocument } = require('../services/identityChecks');
 
 const PAN_RE = /^[A-Z]{5}\d{4}[A-Z]$/;
+
+// Blacklist and duplicate hits are both audited — a blacklisted person trying to
+// re-register is exactly what Security/HR need to see.
+function refuse(res, req, hit) {
+  addAudit(req.auth.mobile, hit.kind === 'blacklisted' ? 'blacklist_hit' : 'duplicate_blocked', hit.audit);
+  return res.status(hit.status).json({ error: hit.error, blocked: hit.kind });
+}
 
 const router = express.Router();
 
@@ -61,9 +69,9 @@ router.get('/digilocker/:id/complete', requireAuth('worker'), async (req, res) =
       addAudit(req.auth.mobile, 'aadhaar_name_mismatch', `Aadhaar name "${result.aadhaar.name}" vs registered "${me.name}"`);
       return res.status(422).json({ error: `Aadhaar name "${result.aadhaar.name}" does not match registered name "${me.name}" (R05) — correct your name to match Aadhaar`, aadhaarName: result.aadhaar.name });
     }
-    // Duplicate block on last-4 + DOB (last-4 alone collides between different people).
-    const dup = key && db.prepare('SELECT id, name FROM workers WHERE aadhaar_key = ? AND id != ? AND status != ?').get(key, req.auth.sub, 'rejected');
-    if (dup) return res.status(409).json({ error: `This Aadhaar is already registered to worker ${dup.name} (BR-09 duplicate block)` });
+    // Blacklist / duplicate on last-4 + DOB (last-4 alone collides between different people).
+    const hit = checkDocument('aadhaar_key', key, req.auth.sub);
+    if (hit) return refuse(res, req, hit);
 
     db.prepare('UPDATE workers SET aadhaar_ref_id = ?, aadhaar_masked = ?, aadhaar_key = COALESCE(?, aadhaar_key), aadhaar_name = ?, aadhaar_verified = 1 WHERE id = ?')
       .run(req.params.id, masked, key, result.aadhaar.name || null, req.auth.sub);
@@ -97,8 +105,8 @@ router.post('/aadhaar-qr', requireAuth('worker'), (req, res) => {
   if (w.aadhaar_verified && w.aadhaar_key && key && w.aadhaar_key !== key) {
     return res.status(409).json({ error: 'A different Aadhaar is already verified on this registration' });
   }
-  const dup = key && db.prepare('SELECT id, name FROM workers WHERE aadhaar_key = ? AND id != ? AND status != ?').get(key, w.id, 'rejected');
-  if (dup) return res.status(409).json({ error: `This Aadhaar is already registered to worker ${dup.name} (BR-09 duplicate block)` });
+  const hit = checkDocument('aadhaar_key', key, w.id);
+  if (hit) return refuse(res, req, hit);
 
   db.prepare(`UPDATE workers SET
       aadhaar_masked = COALESCE(aadhaar_masked, ?), aadhaar_key = ?, aadhaar_name = ?, aadhaar_qr_format = ?, aadhaar_qr_signature = ?, aadhaar_qr_at = ?,
@@ -137,8 +145,8 @@ router.post('/pan/verify', requireAuth('worker'), async (req, res) => {
   const pan = ((req.body || {}).pan || me.pan_ocr_number || '').toUpperCase();
   if (!PAN_RE.test(pan)) return res.status(400).json({ error: 'Take a photo of the PAN card first (or enter a valid PAN, e.g. ABCDE1234F)' });
 
-  const dup = db.prepare('SELECT id, name FROM workers WHERE pan_number = ? AND id != ? AND status != ?').get(pan, req.auth.sub, 'rejected');
-  if (dup) return res.status(409).json({ error: `This PAN is already registered to worker ${dup.name} (BR-09 duplicate block)` });
+  const hit = checkDocument('pan_number', pan, req.auth.sub);
+  if (hit) return refuse(res, req, hit);
 
   try {
     const result = await setu.verifyPan(pan);
@@ -175,7 +183,7 @@ router.post('/skip-dev', requireAuth('worker'), (req, res) => {
   }
   db.prepare(`UPDATE workers SET
       aadhaar_verified = 1, aadhaar_masked = COALESCE(aadhaar_masked, 'XXXX-XXXX-DEV0'),
-      pan_number = COALESCE(pan_number, 'DEVSKIP000X'), pan_verified = 1, kyc_status = 'verified'
+      pan_number = COALESCE(pan_number, 'DEVSKIP-' || substr(id, 1, 8)), pan_verified = 1, kyc_status = 'verified'
     WHERE id = ?`).run(req.auth.sub);
   addAudit(req.auth.mobile, 'kyc_dev_skip', 'Aadhaar + PAN verification skipped — dev mode, no Setu credentials configured yet');
   res.json({ worker: db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub) });
