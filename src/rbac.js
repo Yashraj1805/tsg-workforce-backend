@@ -53,6 +53,8 @@ const PERMISSIONS = {
   'attendance.lock':       ['central_hr'],
   // BRD §7.8: Site HR registers a worker on their own phone, worker present (face + OTP).
   'workers.register_assisted': ['site_hr'],
+  // Proposal: "No HR approval, no entry. Security at the gate checks the portal."
+  'workers.gatecheck':     ['security', 'site_hr', 'central_hr', 'location_head'],
 };
 
 // Security's punch access is limited to blocked attempts (BRD: "View blocked punches").

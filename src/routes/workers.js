@@ -114,6 +114,27 @@ function refuseSubmit(res, w, hit) {
 }
 
 // ---- HR: review and manage workers ----
+// ---- Gate check (proposal: "No HR approval, no entry. Security at the gate checks the
+// portal.") Search by mobile or name; returns only what a guard needs to decide entry —
+// photo, name, vendor, site and whether they're allowed in — never KYC details. Each
+// lookup is audited. Defined before '/:id' so the path isn't read as a worker id.
+router.get('/gate-check', requirePermission('workers.gatecheck'), (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 3) return res.status(400).json({ error: 'Enter at least 3 characters of the mobile number or name' });
+  const scope = workerScopeSql(req.user, 'w');
+  const rows = db.prepare(`SELECT w.id, w.name, w.mobile, w.photo_data_url, w.status, w.blacklisted, w.designation, w.exit_date,
+        v.name AS vendor_name, l.name AS location_name
+      FROM workers w LEFT JOIN vendors v ON v.id = w.vendor_id LEFT JOIN locations l ON l.id = w.location_id
+      WHERE ${scope.sql} AND (w.mobile LIKE ? OR lower(w.name) LIKE ?) ORDER BY w.name LIMIT 10`)
+    .all(...scope.args, `%${q}%`, `%${q.toLowerCase()}%`);
+  addAudit(req.user.email, 'gate_check', `Searched "${q}": ${rows.length} result(s)`);
+  res.json(rows.map(r => ({
+    id: r.id, name: r.name, mobileLast4: (r.mobile || '').slice(-4), photo: r.photo_data_url, designation: r.designation,
+    vendor: r.vendor_name, location: r.location_name, status: r.status, blacklisted: !!r.blacklisted,
+    entryAllowed: r.status === 'approved' && !r.blacklisted,
+  })));
+});
+
 // Every admin read goes through the caller's scope (rbac.js) — e.g. a site HR only
 // ever sees their own location's workers, a vendor coordinator only their vendor's.
 router.get('/', requirePermission('workers.read'), (req, res) => {
