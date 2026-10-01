@@ -205,4 +205,4 @@ function addAudit(user, action, detail) {
     .run(require('node:crypto').randomUUID(), Date.now(), user || 'system', action, detail || '');
 }
 
-module.exports = { db, addAudit };
+module.exports = { db, addAudit, DATA_DIR, DB_PATH };

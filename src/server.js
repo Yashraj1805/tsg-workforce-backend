@@ -24,6 +24,7 @@ app.use('/api/reports', require('./routes/reports'));
 app.use('/api/assisted', require('./routes/assisted'));
 app.use('/api/email-reports', require('./routes/emailReports'));
 app.use('/api', require('./routes/kiosk')); // /api/kiosks (admin), /api/kiosk/* (gate tablet)
+app.use('/api/system', require('./routes/system'));
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 // eslint-disable-next-line no-unused-vars
@@ -35,3 +36,4 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`TSG Workforce backend listening on http://localhost:${PORT}`));
 require('./services/emailReports').startScheduler(); // R15 automatic emails
+require('./services/backup').startBackupScheduler(); // BRD 9 daily backup
