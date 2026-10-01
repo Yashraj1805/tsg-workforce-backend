@@ -5,58 +5,73 @@ const { requireAuth, requirePermission } = require('../middleware/auth');
 const { workerIdScopeSql, PUNCH_RESULT_RESTRICTION } = require('../rbac');
 const { haversineMeters } = require('../services/geo');
 const gemini = require('../services/geminiClient');
+const { sqlDay } = require('../services/time');
+const { alertBlockedPunch } = require('../services/alerts');
 
 const router = express.Router();
 
-const { sqlDay } = require('../services/time');
+// Fake-GPS heuristics (BRD R10 "Block punch ... with fake GPS"; §8 "Fake GPS apps
+// blocked"). The phone's own mock-location flag is the main signal; the server adds a
+// physical-plausibility check it can do without trusting the phone at all.
+const TELEPORT_MIN_M = 2000;      // only judge speed over a real distance
+const TELEPORT_MAX_KMH = 250;     // faster than any road travel between two punches
+const TELEPORT_WINDOW_MS = 6 * 3600000;
 
-// ---- Worker: punch in/out — every check here runs server-side against server-held
-// data (BRD: "A punch is saved only if location, face and phone pass the server
-// checks" / "Server time is saved, not phone time"). The client cannot spoof the
-// worker's assigned location, the geofence radius, or the timestamp. ----
-router.post('/', requireAuth('worker'), async (req, res) => {
-  const { type, lat, lng, accuracy, selfieDataUrl, deviceId } = req.body || {};
-  if (type !== 'in' && type !== 'out') return res.status(400).json({ error: 'type must be "in" or "out"' });
-  if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng are required' });
-  if (!selfieDataUrl) return res.status(400).json({ error: 'selfieDataUrl is required — live camera capture only (FR-K05/R09)' });
-  // BRD §7.8: "Punching is always done by the worker" — a Site HR assisted-registration
-  // token (routes/assisted.js) must never punch, or bind HR's phone as the worker's.
-  if (req.auth.assistedBy) return res.status(403).json({ error: 'Punching is always done by the worker on their own phone' });
-
-  const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
-  if (!w) return res.status(404).json({ error: 'Worker not found' });
-  if (w.status !== 'approved') return res.status(403).json({ error: `Cannot punch — registration status is "${w.status}", not approved (R07)` });
+// ---- Every punch check, in one place. Runs server-side against server-held data (BRD:
+// "A punch is saved only if location, face and phone pass the server checks" / "Server
+// time is saved, not phone time"). Used by the live punch below and by offline sync
+// (R19), which passes the reconstructed original time as `ts`.
+// Returns { ok: true, punch } or { ok: false, status, body }.
+async function evaluatePunch(w, input, ts, opts = {}) {
+  const { type, lat, lng, accuracy, selfieDataUrl, deviceId, integrity } = input;
+  const block = (reason, status, error, note, distanceM) => {
+    logBlocked(w, type, lat, lng, accuracy, distanceM == null ? null : distanceM, selfieDataUrl, deviceId, reason, note, ts, opts.offline);
+    return { ok: false, status, body: { error, blocked: true, reason, distanceM, accuracy } };
+  };
 
   // Device binding (R03: one phone per worker; change needs HR approval).
-  if (!w.device_id && deviceId) {
-    db.prepare('UPDATE workers SET device_id = ? WHERE id = ?').run(deviceId, w.id);
-  } else if (w.device_id && deviceId && w.device_id !== deviceId) {
-    logBlocked(w.id, type, lat, lng, accuracy, null, selfieDataUrl, deviceId, 'device_mismatch');
-    return res.status(403).json({ error: 'This device is not the one registered for this worker — ask HR to approve a device change' });
+  if (w.device_id && deviceId && w.device_id !== deviceId) {
+    return block('device_mismatch', 403, 'This device is not the one registered for this worker — ask HR to approve a device change');
   }
 
   const loc = db.prepare('SELECT * FROM locations WHERE id = ?').get(w.location_id);
-  if (!loc) return res.status(400).json({ error: 'Worker has no assigned location — ask HR to fix this in the worker record' });
-
+  if (!loc) return { ok: false, status: 400, body: { error: 'Worker has no assigned location — ask HR to fix this in the worker record' } };
   const distanceM = Math.round(haversineMeters(lat, lng, loc.lat, loc.lng));
 
+  // Fake GPS: the phone reports a mock-location fix → block.
+  if (integrity && (integrity.mock || integrity.legacyMockSetting)) {
+    return block('fake_gps', 422, 'A fake-location app is active on this phone — turn it off and punch again', `phone reported mock location (fixes checked: ${integrity.fixesChecked ?? '?'})`, distanceM);
+  }
+  // Fake GPS: impossible travel since this worker's previous punch attempt.
+  const prev = db.prepare('SELECT ts, lat, lng FROM punches WHERE worker_id = ? AND lat IS NOT NULL AND ts < ? ORDER BY ts DESC LIMIT 1').get(w.id, ts);
+  if (prev && ts - prev.ts < TELEPORT_WINDOW_MS) {
+    const moved = haversineMeters(lat, lng, prev.lat, prev.lng);
+    const kmh = (moved / 1000) / Math.max((ts - prev.ts) / 3600000, 1 / 3600);
+    if (moved > TELEPORT_MIN_M && kmh > TELEPORT_MAX_KMH) {
+      return block('fake_gps', 422, 'Location jumped impossibly far since your last punch — fake GPS suspected', `moved ${Math.round(moved / 1000)} km in ${Math.round((ts - prev.ts) / 60000)} min (${Math.round(kmh)} km/h)`, distanceM);
+    }
+  }
+  // Real GPS never returns exactly the same coordinates on different days; a spoofing
+  // app often does. Not blocked on its own (could be a cached fix) — noted and alerted.
+  const sameSpot = db.prepare(`SELECT 1 FROM punches WHERE worker_id = ? AND lat = ? AND lng = ? AND ${sqlDay('ts')} != ${sqlDay('?')} LIMIT 1`).get(w.id, lat, lng, ts);
+  const integrityNote = sameSpot ? 'exact same coordinates as a punch on another day (possible fake GPS)' : null;
+
   if (accuracy != null && accuracy > loc.accuracy_limit) {
-    logBlocked(w.id, type, lat, lng, accuracy, distanceM, selfieDataUrl, deviceId, 'low_accuracy');
-    return res.status(422).json({ error: `GPS accuracy too low (${Math.round(accuracy)}m, limit ${loc.accuracy_limit}m) — move to an open area and try again`, blocked: true, reason: 'low_accuracy', distanceM, accuracy });
+    return block('low_accuracy', 422, `GPS accuracy too low (${Math.round(accuracy)}m, limit ${loc.accuracy_limit}m) — move to an open area and try again`, null, distanceM);
   }
   if (distanceM > loc.radius) {
-    logBlocked(w.id, type, lat, lng, accuracy, distanceM, selfieDataUrl, deviceId, 'outside_geofence');
-    return res.status(422).json({ error: `Outside the geofenced work location (${distanceM}m away, radius ${loc.radius}m)`, blocked: true, reason: 'outside_geofence', distanceM, accuracy });
+    return block('outside_geofence', 422, `Outside the geofenced work location (${distanceM}m away, radius ${loc.radius}m)`, null, distanceM);
   }
 
-  const now = Date.now(); // server time, never trust a client-supplied timestamp
-  const todaysPunches = db.prepare(`SELECT * FROM punches WHERE worker_id = ? AND result = 'ok' AND ${sqlDay('ts')} = ${sqlDay('?')} ORDER BY ts`)
-    .all(w.id, now);
-  const hasIn = todaysPunches.some(p => p.type === 'in');
-  const hasOut = todaysPunches.some(p => p.type === 'out');
-  if (type === 'in' && hasIn) return res.status(409).json({ error: 'Already punched in today (R09: one punch-in per day)' });
-  if (type === 'out' && !hasIn) return res.status(409).json({ error: 'Cannot punch out before punching in' });
-  if (type === 'out' && hasOut) return res.status(409).json({ error: 'Already punched out today' });
+  const dayPunches = db.prepare(`SELECT * FROM punches WHERE worker_id = ? AND result = 'ok' AND ${sqlDay('ts')} = ${sqlDay('?')} ORDER BY ts`).all(w.id, ts);
+  const hasIn = dayPunches.some(p => p.type === 'in');
+  const hasOut = dayPunches.some(p => p.type === 'out');
+  if (type === 'in' && hasIn) return { ok: false, status: 409, body: { error: 'Already punched in today (R09: one punch-in per day)' } };
+  if (type === 'out' && !hasIn) return { ok: false, status: 409, body: { error: 'Cannot punch out before punching in' } };
+  if (type === 'out' && hasOut) return { ok: false, status: 409, body: { error: 'Already punched out today' } };
+  if (type === 'out' && ts <= Math.max(...dayPunches.filter(p => p.type === 'in').map(p => p.ts))) {
+    return { ok: false, status: 409, body: { error: 'Punch-out time is before the punch-in time' } };
+  }
 
   // Automated face-match (Gemini vision judgement — not a certified biometric API; see
   // geminiClient.js). Only runs if a key is configured and the worker has a registration
@@ -68,23 +83,24 @@ router.post('/', requireAuth('worker'), async (req, res) => {
   // real worker got a clean match on punch-in and a false mismatch on punch-out a few
   // minutes later, same face, same device) that blocking on one borderline read is too
   // fragile for something that locks a legitimate worker out of clocking out. So a
-  // mismatch only actually blocks if a second, independent call agrees — one noisy
-  // "no" no longer blocks on its own, both calls have to say "no".
+  // mismatch — or a "photo of a screen/photo" spoof verdict (BRD §8: "Face match with
+  // live check") — only blocks if a second, independent call agrees.
   let faceMatchNote = null;
   if (gemini.isConfigured() && w.photo_data_url) {
     const first = await gemini.compareFaces(w.photo_data_url, selfieDataUrl);
     if (first.ok) {
       const firstNote = `samePerson=${first.samePerson} confidence=${first.confidence} spoofSuspected=${first.spoofSuspected}: ${first.reason}`;
-      if (!first.samePerson && first.confidence >= 0.75) {
+      const mismatch = !first.samePerson && first.confidence >= 0.75;
+      if (mismatch || first.spoofSuspected) {
         const second = await gemini.compareFaces(w.photo_data_url, selfieDataUrl);
-        if (second.ok && !second.samePerson && second.confidence >= 0.75) {
-          faceMatchNote = `[check 1] ${firstNote} | [check 2 confirmed] samePerson=${second.samePerson} confidence=${second.confidence}: ${second.reason}`;
-          logBlocked(w.id, type, lat, lng, accuracy, distanceM, selfieDataUrl, deviceId, 'face_mismatch', faceMatchNote);
-          return res.status(422).json({ error: `Selfie doesn't appear to match the registered photo (${second.reason})`, blocked: true, reason: 'face_mismatch', distanceM, accuracy });
+        const secondNote = second.ok ? `samePerson=${second.samePerson} confidence=${second.confidence} spoofSuspected=${second.spoofSuspected}: ${second.reason}` : `failed: ${second.error}`;
+        if (second.ok && mismatch && !second.samePerson && second.confidence >= 0.75) {
+          return block('face_mismatch', 422, `Selfie doesn't appear to match the registered photo (${second.reason})`, `[check 1] ${firstNote} | [check 2 confirmed] ${secondNote}`, distanceM);
         }
-        faceMatchNote = second.ok
-          ? `[check 1] ${firstNote} | [check 2 overturned it] samePerson=${second.samePerson} confidence=${second.confidence}: ${second.reason} — allowed`
-          : `[check 1] ${firstNote} | [check 2 failed: ${second.error}] — allowed, not treating one noisy read as fraud`;
+        if (second.ok && first.spoofSuspected && second.spoofSuspected) {
+          return block('spoof_suspected', 422, 'This looks like a photo of a photo or a screen — take a live selfie', `[check 1] ${firstNote} | [check 2 confirmed spoof] ${secondNote}`, distanceM);
+        }
+        faceMatchNote = `[check 1] ${firstNote} | [check 2 did not confirm] ${secondNote} — allowed`;
       } else {
         faceMatchNote = firstNote;
       }
@@ -92,25 +108,51 @@ router.post('/', requireAuth('worker'), async (req, res) => {
       faceMatchNote = `face check unavailable: ${first.error}`;
     }
   }
+  if (integrityNote) {
+    faceMatchNote = [faceMatchNote, integrityNote].filter(Boolean).join(' | ');
+    alertBlockedPunch(w, 'gps_suspicious', integrityNote);
+  }
+
+  // Bind the phone on first successful punch (R03).
+  if (!w.device_id && deviceId) db.prepare('UPDATE workers SET device_id = ? WHERE id = ?').run(deviceId, w.id);
 
   const id = crypto.randomUUID();
   // vendor_id/location_id stamped at punch time so the vendor bill check (R16) bills the
   // vendor the worker belonged to that day, even after a later transfer.
-  db.prepare(`INSERT INTO punches (id, worker_id, type, ts, lat, lng, accuracy, distance_m, selfie_data_url, result, reason, device_id, face_match_note, vendor_id, location_id, created_at)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, w.id, type, now, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'ok', null, deviceId || null, faceMatchNote, w.vendor_id, w.location_id, now);
-  addAudit(w.mobile, 'punch_' + type, `${type.toUpperCase()} at ${new Date(now).toISOString()}, ${distanceM}m from ${loc.name}`);
+  db.prepare(`INSERT INTO punches (id, worker_id, type, ts, lat, lng, accuracy, distance_m, selfie_data_url, result, reason, device_id, face_match_note, vendor_id, location_id, offline, created_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, w.id, type, ts, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'ok', null, deviceId || null, faceMatchNote, w.vendor_id, w.location_id, opts.offline ? 1 : 0, Date.now());
+  addAudit(w.mobile, 'punch_' + type, `${type.toUpperCase()} at ${new Date(ts).toISOString()}${opts.offline ? ' (offline, synced later)' : ''}, ${distanceM}m from ${loc.name}`);
+  return { ok: true, punch: { id, type, ts, distanceM, accuracy, location: loc.name } };
+}
 
-  res.json({ ok: true, id, type, ts: now, distanceM, accuracy });
+router.post('/', requireAuth('worker'), async (req, res) => {
+  const { type, lat, lng, selfieDataUrl } = req.body || {};
+  if (type !== 'in' && type !== 'out') return res.status(400).json({ error: 'type must be "in" or "out"' });
+  if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng are required' });
+  if (!selfieDataUrl) return res.status(400).json({ error: 'selfieDataUrl is required — live camera capture only (FR-K05/R09)' });
+  // BRD §7.8: "Punching is always done by the worker" — a Site HR assisted-registration
+  // token (routes/assisted.js) must never punch, or bind HR's phone as the worker's.
+  if (req.auth.assistedBy) return res.status(403).json({ error: 'Punching is always done by the worker on their own phone' });
+
+  const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
+  if (!w) return res.status(404).json({ error: 'Worker not found' });
+  if (w.status !== 'approved') return res.status(403).json({ error: `Cannot punch — registration status is "${w.status}", not approved (R07)` });
+
+  const r = await evaluatePunch(w, req.body, Date.now()); // server time, never a client-supplied timestamp
+  if (!r.ok) return res.status(r.status).json(r.body);
+  res.json({ ok: true, ...r.punch });
 });
 
-function logBlocked(workerId, type, lat, lng, accuracy, distanceM, selfieDataUrl, deviceId, reason, faceMatchNote) {
+function logBlocked(w, type, lat, lng, accuracy, distanceM, selfieDataUrl, deviceId, reason, faceMatchNote, ts, offline) {
   const id = crypto.randomUUID();
-  const now = Date.now();
-  db.prepare(`INSERT INTO punches (id, worker_id, type, ts, lat, lng, accuracy, distance_m, selfie_data_url, result, reason, device_id, face_match_note, created_at)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, workerId, type, now, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'blocked', reason, deviceId || null, faceMatchNote || null, now);
-  addAudit(workerId, 'punch_blocked', `${type} blocked: ${reason}`);
+  const when = ts || Date.now();
+  db.prepare(`INSERT INTO punches (id, worker_id, type, ts, lat, lng, accuracy, distance_m, selfie_data_url, result, reason, device_id, face_match_note, offline, created_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, w.id, type, when, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'blocked', reason, deviceId || null, faceMatchNote || null, offline ? 1 : 0, Date.now());
+  addAudit(w.id, 'punch_blocked', `${type} blocked: ${reason}`);
+  // BRD §11 screen 6: "Save the attempt and alert Security."
+  alertBlockedPunch(w, reason, faceMatchNote);
 }
 
 router.get('/me', requireAuth('worker'), (req, res) => {
