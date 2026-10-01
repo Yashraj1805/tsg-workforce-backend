@@ -200,8 +200,13 @@ function periodKey(s) {
   const n = istNow();
   return s.schedule === 'monthly' ? n.date.slice(0, 7) : n.date; // weekly is keyed by its (single) day too
 }
+// A report missed because the server was down is still sent if the server comes back
+// within this window — but not hours later (a 10:30 "my team today" at 23:00 is noise).
+const CATCH_UP_MINUTES = 180;
+const toMin = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
 function isDue(s, n) {
   if (!s.enabled || n.hhmm < s.time) return false;
+  if (toMin(n.hhmm) - toMin(s.time) > CATCH_UP_MINUTES) return false;
   if (s.schedule === 'weekly' && n.weekday !== (s.weekday ?? 1)) return false;
   if (s.schedule === 'monthly' && n.dayOfMonth !== 1) return false;
   return !db.prepare("SELECT 1 FROM email_runs WHERE report = ? AND period = ? AND trigger = 'schedule'").get(s.key, periodKey(s));
