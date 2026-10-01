@@ -1,5 +1,6 @@
 // Server-side login sessions (BRD R17 "Audit log of every change, login and logout",
-// R18 "Admin login ... Logout after 15 minutes idle").
+// R18 "Admin login ... Logout after 15 minutes idle"). Kinds: worker, admin, and
+// assisted (Site HR registering a worker on HR's phone — idles out like admin).
 //
 // Every token carries a session id (`sid`). The session row is what makes logout and
 // idle-timeout real: once it's ended, the token stops working server-side even though
@@ -16,7 +17,7 @@ function startSession(kind, userId, identifier, detail) {
   const now = Date.now();
   db.prepare('INSERT INTO sessions (id, kind, user_id, identifier, created_at, last_seen_at) VALUES (?,?,?,?,?,?)')
     .run(sid, kind, userId, identifier, now, now);
-  addAudit(identifier, kind === 'admin' ? 'admin_login' : 'worker_login', detail || '');
+  addAudit(identifier, kind === 'admin' ? 'admin_login' : kind === 'assisted' ? 'assisted_session_start' : 'worker_login', detail || '');
   return sid;
 }
 
@@ -24,7 +25,7 @@ function endSession(sid, reason) {
   const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sid);
   if (!s || s.ended_at) return false;
   db.prepare('UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?').run(Date.now(), reason, sid);
-  addAudit(s.identifier, s.kind === 'admin' ? 'admin_logout' : 'worker_logout', reason === 'logout' ? 'Logged out' : `Signed out: ${reason}`);
+  addAudit(s.identifier, s.kind === 'admin' ? 'admin_logout' : s.kind === 'assisted' ? 'assisted_session_end' : 'worker_logout', reason === 'logout' ? 'Logged out' : `Signed out: ${reason}`);
   return true;
 }
 
@@ -36,7 +37,7 @@ function checkSession(payload) {
   if (!s || s.user_id !== payload.sub) return 'Session not found — please sign in again';
   if (s.ended_at) return s.end_reason === 'idle_timeout' ? 'Signed out after 15 minutes without use — please sign in again' : 'You have signed out — please sign in again';
   const now = Date.now();
-  if (s.kind === 'admin' && now - s.last_seen_at > ADMIN_IDLE_MS) {
+  if (s.kind !== 'worker' && now - s.last_seen_at > ADMIN_IDLE_MS) {
     endSession(s.id, 'idle_timeout');
     return 'Signed out after 15 minutes without use — please sign in again';
   }

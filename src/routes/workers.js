@@ -55,6 +55,10 @@ router.put('/me', requireAuth('worker'), (req, res) => {
     if (val && !db.prepare('SELECT 1 FROM locations WHERE id = ?').get(val)) {
       return res.status(400).json({ error: 'Selected location does not exist — ask HR to add it first' });
     }
+    // Site HR assisted registration: the worker is registered at that HR's own site.
+    if (req.auth.assistedBy && val !== req.auth.assistedLocationId) {
+      return res.status(400).json({ error: 'A worker registered by Site HR must be at that Site HR\'s location' });
+    }
     body.locationId = val;
   }
 

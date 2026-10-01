@@ -51,6 +51,8 @@ const PERMISSIONS = {
   'billing.read':          ['mis_finance', 'central_hr', 'vendor_coordinator'],
   'billing.write':         ['mis_finance'],
   'attendance.lock':       ['central_hr'],
+  // BRD §7.8: Site HR registers a worker on their own phone, worker present (face + OTP).
+  'workers.register_assisted': ['site_hr'],
 };
 
 // Security's punch access is limited to blocked attempts (BRD: "View blocked punches").

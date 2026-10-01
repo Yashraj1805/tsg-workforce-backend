@@ -19,6 +19,9 @@ router.post('/', requireAuth('worker'), async (req, res) => {
   if (type !== 'in' && type !== 'out') return res.status(400).json({ error: 'type must be "in" or "out"' });
   if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng are required' });
   if (!selfieDataUrl) return res.status(400).json({ error: 'selfieDataUrl is required — live camera capture only (FR-K05/R09)' });
+  // BRD §7.8: "Punching is always done by the worker" — a Site HR assisted-registration
+  // token (routes/assisted.js) must never punch, or bind HR's phone as the worker's.
+  if (req.auth.assistedBy) return res.status(403).json({ error: 'Punching is always done by the worker on their own phone' });
 
   const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
   if (!w) return res.status(404).json({ error: 'Worker not found' });
