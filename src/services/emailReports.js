@@ -11,6 +11,24 @@ const { sendEmail, sendWhatsApp } = require('./notify');
 const reports = require('./reports');
 const { daysByVendor } = require('./attendance');
 const { today, dayOf } = require('./time');
+const gemini = require('./geminiClient');
+
+// One AI-written insight sentence for the weekly summary (the one report where a human
+// actually wants a synthesized takeaway across locations/vendors, not just a number
+// list — the daily reports already have a hand-written one-line summary each). Fails
+// silently and fast (6s) rather than ever delaying or breaking the email send.
+async function aiInsight(context) {
+  if (!gemini.isConfigured()) return '';
+  try {
+    const r = await gemini.ask(
+      `This week's attendance data for a contract-workforce attendance system (JSON): ${JSON.stringify(context).slice(0, 3000)}\n` +
+      'Write ONE short, specific sentence an HR manager would find useful — a notable trend, an outlier location/vendor, or a risk. Only state what the data above actually shows, never invent a number. If nothing stands out, say that briefly instead of forcing an insight.',
+      { type: 'object', properties: { insight: { type: 'string' } }, required: ['insight'] },
+      6000
+    );
+    return r.ok ? r.insight : '';
+  } catch (e) { return ''; }
+}
 
 db.exec(`CREATE TABLE IF NOT EXISTS email_settings (key TEXT PRIMARY KEY, enabled INTEGER NOT NULL, time TEXT NOT NULL, weekday INTEGER, extra_recipients TEXT, updated_by TEXT, updated_at INTEGER)`);
 db.exec(`CREATE TABLE IF NOT EXISTS email_runs (id TEXT PRIMARY KEY, report TEXT NOT NULL, period TEXT NOT NULL, ran_at INTEGER NOT NULL, trigger TEXT, messages INTEGER, sent INTEGER, note TEXT)`);
@@ -135,7 +153,13 @@ const BUILDERS = {
     const pct = (list) => list.length ? Math.round(100 * list.filter(r => /^Present|Half/.test(r.status)).length / list.length) : 0;
     const group = (k) => Object.entries(rows.reduce((m, r) => { (m[r[k] || '-'] = m[r[k] || '-'] || []).push(r); return m; }, {})).map(([name, list]) => ({ name, days: list.length, pct: pct(list) }));
     const byLoc = group('location'), byVendor = group('vendor');
-    const text = [`Attendance ${fmtDate(start)} – ${fmtDate(end)}: ${pct(rows)}% overall.`, '', 'By location:', ...byLoc.map(g => `  ${g.name}: ${g.pct}%`), '', 'By vendor:', ...byVendor.map(g => `  ${g.name}: ${g.pct}%`)].join('\n');
+    const insight = await aiInsight({ overallPercent: pct(rows), byLocation: byLoc, byVendor });
+    const text = [
+      `Attendance ${fmtDate(start)} – ${fmtDate(end)}: ${pct(rows)}% overall.`,
+      ...(insight ? [`AI insight: ${insight}`] : []),
+      '', 'By location:', ...byLoc.map(g => `  ${g.name}: ${g.pct}%`),
+      '', 'By vendor:', ...byVendor.map(g => `  ${g.name}: ${g.pct}%`),
+    ].join('\n');
     const cols = [{ header: 'Name', key: 'name', width: 24 }, { header: 'Worker-days', key: 'days', width: 12 }, { header: 'Attendance %', key: 'pct', width: 12 }];
     const buf = await reports.toXlsx([{ name: 'By location', columns: cols, rows: byLoc }, { name: 'By vendor', columns: cols, rows: byVendor }, { name: 'Detail', columns: reports.ATTENDANCE_COLUMNS, rows }]);
     return [{ to, subject: `Weekly attendance summary — ${pct(rows)}%`, text, attachments: [{ filename: `weekly-summary-${end}.xlsx`, content: buf }] }];
