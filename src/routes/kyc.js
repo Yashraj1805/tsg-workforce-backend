@@ -149,10 +149,11 @@ router.post('/pan/photo', requireAuth('worker'), async (req, res) => {
   const pan = (r.panNumber || '').toUpperCase().replace(/\s/g, '');
   if (!r.isPanCard) return res.status(422).json({ error: 'That doesn\'t look like a PAN card — take a clear photo of the front of the PAN card' });
   if (!PAN_RE.test(pan)) return res.status(422).json({ error: 'Could not read the PAN number clearly — retake the photo in good light, card flat and filling the frame' });
-  db.prepare('UPDATE workers SET pan_photo_data_url = ?, pan_ocr_number = ?, pan_ocr_name = ? WHERE id = ?')
-    .run(photoDataUrl, pan, r.nameOnCard || null, req.auth.sub);
-  addAudit(req.auth.mobile, 'pan_photo_read', `PAN read from photo: ${pan.slice(0, 5)}XXXX${pan.slice(-1)} (confidence ${r.confidence})`);
-  res.json({ panNumber: pan, nameOnCard: r.nameOnCard, confidence: r.confidence });
+  const tamperNote = r.tamperSuspected ? (r.tamperNote || 'possible digital editing detected') : null;
+  db.prepare('UPDATE workers SET pan_photo_data_url = ?, pan_ocr_number = ?, pan_ocr_name = ?, pan_tamper_note = ? WHERE id = ?')
+    .run(photoDataUrl, pan, r.nameOnCard || null, tamperNote, req.auth.sub);
+  addAudit(req.auth.mobile, 'pan_photo_read', `PAN read from photo: ${pan.slice(0, 5)}XXXX${pan.slice(-1)} (confidence ${r.confidence})${tamperNote ? ` — TAMPER FLAG: ${tamperNote}` : ''}`);
+  res.json({ panNumber: pan, nameOnCard: r.nameOnCard, confidence: r.confidence, tamperSuspected: !!r.tamperSuspected });
 });
 
 // ---- PAN (BRD FR-K07 / R05) ----

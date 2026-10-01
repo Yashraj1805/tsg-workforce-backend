@@ -107,7 +107,8 @@ async function detectFace(frameDataUrl) {
 async function readPanCard(photoDataUrl) {
   const photo = parseDataUrl(photoDataUrl);
   return callGemini(
-    'This is a phone camera photo of what should be an Indian PAN card (Permanent Account Number card issued by the Income Tax Department). It may be rotated, angled or slightly blurred. Read it. The PAN is exactly 10 characters: 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F) — read it character by character, distinguishing 0/O, 1/I, 5/S, 8/B by position (positions 1-5 and 10 are letters, 6-9 are digits). If it is not a PAN card (e.g. an Aadhaar card, a screen, a blank photo), set isPanCard false and leave the other fields empty.',
+    'This is a phone camera photo of what should be an Indian PAN card (Permanent Account Number card issued by the Income Tax Department). It may be rotated, angled or slightly blurred. Read it. The PAN is exactly 10 characters: 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F) — read it character by character, distinguishing 0/O, 1/I, 5/S, 8/B by position (positions 1-5 and 10 are letters, 6-9 are digits). If it is not a PAN card (e.g. an Aadhaar card, a screen, a blank photo), set isPanCard false and leave the other fields empty. ' +
+    'Separately, look for signs of digital editing or forgery: inconsistent fonts or letter spacing within the printed text, a visibly pasted/cloned photo or text block, mismatched lighting/sharpness between the photo and the card body, or edge/halo artifacts around text — as opposed to normal photo noise, glare, creases or wear on a genuine physical card, which are NOT signs of forgery. Only flag tamperSuspected when something looks actually edited, not just low quality.',
     [photo],
     {
       type: 'object',
@@ -118,8 +119,10 @@ async function readPanCard(photoDataUrl) {
         fatherName: { type: 'string', description: "father's name as printed, or empty" },
         dob: { type: 'string', description: 'date of birth as printed (DD/MM/YYYY), or empty' },
         confidence: { type: 'number', description: '0 to 1, how sure you are the PAN was read correctly' },
+        tamperSuspected: { type: 'boolean', description: 'true only if there are actual visible signs of digital editing/forgery, not just low photo quality' },
+        tamperNote: { type: 'string', description: 'one short reason if tamperSuspected, else empty' },
       },
-      required: ['isPanCard', 'panNumber', 'nameOnCard', 'confidence'],
+      required: ['isPanCard', 'panNumber', 'nameOnCard', 'confidence', 'tamperSuspected'],
     },
     15000
   );
