@@ -5,6 +5,7 @@ const { requireAuth } = require('../middleware/auth');
 const setu = require('../services/setuClient');
 const gemini = require('../services/geminiClient');
 const { parseAadhaarQr, aadhaarKey } = require('../services/aadhaarQr');
+const { namesMatch } = require('../services/nameMatch');
 
 const PAN_RE = /^[A-Z]{5}\d{4}[A-Z]$/;
 
@@ -55,6 +56,11 @@ router.get('/digilocker/:id/complete', requireAuth('worker'), async (req, res) =
       addAudit(req.auth.mobile, 'aadhaar_mismatch', `DigiLocker Aadhaar (…${last4}) differs from scanned QR`);
       return res.status(409).json({ error: 'The Aadhaar verified in DigiLocker is not the same card that was scanned — scan your own Aadhaar card again' });
     }
+    // R05: the name on the verified Aadhaar must match the registration name.
+    if (me.name && result.aadhaar.name && !namesMatch(me.name, result.aadhaar.name)) {
+      addAudit(req.auth.mobile, 'aadhaar_name_mismatch', `Aadhaar name "${result.aadhaar.name}" vs registered "${me.name}"`);
+      return res.status(422).json({ error: `Aadhaar name "${result.aadhaar.name}" does not match registered name "${me.name}" (R05) — correct your name to match Aadhaar`, aadhaarName: result.aadhaar.name });
+    }
     // Duplicate block on last-4 + DOB (last-4 alone collides between different people).
     const dup = key && db.prepare('SELECT id, name FROM workers WHERE aadhaar_key = ? AND id != ? AND status != ?').get(key, req.auth.sub, 'rejected');
     if (dup) return res.status(409).json({ error: `This Aadhaar is already registered to worker ${dup.name} (BR-09 duplicate block)` });
@@ -100,7 +106,10 @@ router.post('/aadhaar-qr', requireAuth('worker'), (req, res) => {
     WHERE id = ?`)
     .run(`XXXX-XXXX-${qr.last4}`, key, qr.name || null, qr.format, qr.signature, Date.now(), qr.name || null, qr.dob || null, qr.gender || null, w.id);
   addAudit(req.auth.mobile, 'aadhaar_qr_scanned', `Aadhaar QR (${qr.format}, signature ${qr.signature}) …${qr.last4}`);
-  res.json({ last4: qr.last4, name: qr.name, dob: qr.dob, gender: qr.gender, format: qr.format, signature: qr.signature,
+  // Not blocking here — the worker may simply have typed their name differently first;
+  // the app shows the warning, and submit refuses until the names agree (R05).
+  const nameMatches = !w.name || !qr.name || namesMatch(w.name, qr.name);
+  res.json({ last4: qr.last4, name: qr.name, dob: qr.dob, gender: qr.gender, format: qr.format, signature: qr.signature, nameMatches,
     worker: db.prepare('SELECT * FROM workers WHERE id = ?').get(w.id) });
 });
 
@@ -137,13 +146,10 @@ router.post('/pan/verify', requireAuth('worker'), async (req, res) => {
       return res.status(422).json({ error: result.message || 'PAN verification failed', raw: result });
     }
     const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
-    if (w.name && result.data.full_name) {
-      const nameMatch = normalizeName(w.name) === normalizeName(result.data.full_name);
-      if (!nameMatch) {
-        return res.status(422).json({ error: `PAN name "${result.data.full_name}" does not match registered name "${w.name}" (FR-K07 requires a match)`, panName: result.data.full_name });
-      }
+    if (w.name && result.data.full_name && !namesMatch(w.name, result.data.full_name)) {
+      return res.status(422).json({ error: `PAN name "${result.data.full_name}" does not match registered name "${w.name}" (R05 requires a match)`, panName: result.data.full_name });
     }
-    db.prepare('UPDATE workers SET pan_number = ?, pan_verified = 1 WHERE id = ?').run(pan, req.auth.sub);
+    db.prepare('UPDATE workers SET pan_number = ?, pan_name = ?, pan_verified = 1 WHERE id = ?').run(pan, result.data.full_name || null, req.auth.sub);
     addAudit(req.auth.mobile, 'pan_verified', `PAN verified: ${pan.slice(0, 5)}XXXX${pan.slice(-1)}`);
 
     const updated = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
@@ -156,7 +162,6 @@ router.post('/pan/verify', requireAuth('worker'), async (req, res) => {
   }
 });
 
-function normalizeName(s) { return (s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
 
 const setuConfigured = setu.isConfigured;
 

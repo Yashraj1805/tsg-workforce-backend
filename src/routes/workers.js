@@ -3,6 +3,7 @@ const { db, addAudit } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { workerScopeSql } = require('../rbac');
 const setu = require('../services/setuClient');
+const { namesMatch } = require('../services/nameMatch');
 
 const router = express.Router();
 
@@ -68,6 +69,13 @@ router.post('/me/submit', requireAuth('worker'), (req, res) => {
   // dev KYC skip (kyc.js /skip-dev) exists precisely because there's nothing to scan yet.
   if (setu.isConfigured() && (!w.aadhaar_qr_at || !w.pan_photo_data_url)) {
     return res.status(400).json({ error: 'Scan the Aadhaar QR and take a photo of the PAN card before submitting (R04)' });
+  }
+  // R05, re-checked at submit: the profile name can still be edited after KYC, so the
+  // match done at verification time alone isn't enough.
+  for (const [doc, docName] of [['Aadhaar', w.aadhaar_name], ['PAN', w.pan_name]]) {
+    if (w.name && docName && !namesMatch(w.name, docName)) {
+      return res.status(400).json({ error: `Your name "${w.name}" does not match the name on your ${doc} ("${docName}") — correct it before submitting (R05)` });
+    }
   }
   if (!w.name || !w.location_id || !w.vendor_id) {
     return res.status(400).json({ error: 'Complete your profile (name, vendor, location) before submitting' });

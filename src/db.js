@@ -154,6 +154,7 @@ addColumnIfMissing('workers', 'aadhaar_qr_at', 'INTEGER');
 addColumnIfMissing('workers', 'pan_photo_data_url', 'TEXT');
 addColumnIfMissing('workers', 'pan_ocr_number', 'TEXT');
 addColumnIfMissing('workers', 'pan_ocr_name', 'TEXT');
+addColumnIfMissing('workers', 'pan_name', 'TEXT'); // R05: name returned by the PAN verification API
 addColumnIfMissing('regularisations', 'maker_id', 'TEXT');
 addColumnIfMissing('regularisations', 'checker_id', 'TEXT');
 
