@@ -158,6 +158,10 @@ addColumnIfMissing('workers', 'pan_name', 'TEXT'); // R05: name returned by the 
 addColumnIfMissing('workers', 'face_check_note', 'TEXT'); // R06: duplicate/blacklist face check outcome, shown to HR
 addColumnIfMissing('vendors', 'contract_start', 'TEXT'); // R01, YYYY-MM-DD
 addColumnIfMissing('vendors', 'contract_end', 'TEXT');
+// R14: exit details + per-worker change history (transfer / exit / device reset / ...).
+addColumnIfMissing('workers', 'exit_date', 'TEXT');
+addColumnIfMissing('workers', 'exit_reason', 'TEXT');
+db.exec('CREATE TABLE IF NOT EXISTS worker_events (id TEXT PRIMARY KEY, worker_id TEXT NOT NULL REFERENCES workers(id), ts INTEGER NOT NULL, by_user TEXT, type TEXT NOT NULL, detail TEXT, reason TEXT)');
 addColumnIfMissing('regularisations', 'maker_id', 'TEXT');
 addColumnIfMissing('regularisations', 'checker_id', 'TEXT');
 

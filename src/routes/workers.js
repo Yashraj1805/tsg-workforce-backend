@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { workerScopeSql } = require('../rbac');
@@ -163,6 +164,7 @@ router.put('/:id/reporting-manager', requirePermission('workers.manage'), (req, 
   const mgr = readManager(req.body || {});
   if (mgr.error) return res.status(400).json({ error: mgr.error });
   db.prepare('UPDATE workers SET reporting_manager_name = ?, reporting_manager_email = ? WHERE id = ?').run(mgr.name, mgr.email, w.id);
+  logEvent(w.id, req.user, 'manager_change', `Reporting manager ${w.reporting_manager_email || '-'} -> ${mgr.name} <${mgr.email}>`, null);
   addAudit(req.auth.email, 'change_reporting_manager', `${w.name}: ${w.reporting_manager_email || '-'} -> ${mgr.email}`);
   res.json(getWorker(w.id));
 });
@@ -191,22 +193,70 @@ router.post('/:id/reject', requirePermission('workers.approve'), (req, res) => {
   res.json(getWorker(w.id));
 });
 
-router.post('/:id/exit', requirePermission('workers.manage'), (req, res) => {
-  const { reason, blacklist } = req.body || {};
+// ---- R14: transfer, exit, blacklist (+ R03 device change) ----
+// BRD §8 "Records are never overwritten. Every change is logged with name and reason":
+// every action here needs a reason and leaves a worker_events row (shown on the
+// worker's history in the HR app) as well as the global audit log.
+function logEvent(workerId, user, type, detail, reason) {
+  db.prepare('INSERT INTO worker_events (id, worker_id, ts, by_user, type, detail, reason) VALUES (?,?,?,?,?,?,?)')
+    .run(crypto.randomUUID(), workerId, Date.now(), user.email, type, detail, reason);
+}
+function needReason(body) { return (body.reason || '').trim() || null; }
+
+router.get('/:id/history', requirePermission('workers.read'), (req, res) => {
   const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
-  db.prepare("UPDATE workers SET status = 'exited', blacklisted = ? WHERE id = ?").run(blacklist ? 1 : 0, w.id);
-  addAudit(req.auth.email, 'exit_worker', `Exited ${w.name}${blacklist ? ' (blacklisted)' : ''}: ${reason || ''}`);
+  res.json(db.prepare('SELECT * FROM worker_events WHERE worker_id = ? ORDER BY ts DESC').all(w.id));
+});
+
+router.post('/:id/exit', requirePermission('workers.manage'), (req, res) => {
+  const body = req.body || {};
+  const reason = needReason(body);
+  if (!reason) return res.status(400).json({ error: 'reason is required' });
+  const w = getScopedWorker(req.user, req.params.id);
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  if (w.status === 'exited') return res.status(400).json({ error: 'Worker has already exited' });
+  const blacklist = !!body.blacklist;
+  const exitDate = body.exitDate || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(exitDate)) return res.status(400).json({ error: 'exitDate must be YYYY-MM-DD' });
+  db.prepare("UPDATE workers SET status = 'exited', blacklisted = ?, exit_date = ?, exit_reason = ? WHERE id = ?").run(blacklist ? 1 : 0, exitDate, reason, w.id);
+  logEvent(w.id, req.user, blacklist ? 'exit_blacklisted' : 'exit', `Exited on ${exitDate}${blacklist ? ', blacklisted (Aadhaar, PAN and face can never register again)' : ''}`, reason);
+  addAudit(req.auth.email, 'exit_worker', `Exited ${w.name}${blacklist ? ' (blacklisted)' : ''}: ${reason}`);
   res.json(getWorker(w.id));
 });
 
 router.post('/:id/transfer', requirePermission('workers.manage'), (req, res) => {
-  const { locationId, vendorId } = req.body || {};
+  const body = req.body || {};
+  const reason = needReason(body);
+  if (!reason) return res.status(400).json({ error: 'reason is required' });
   const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
-  db.prepare('UPDATE workers SET location_id = COALESCE(?, location_id), vendor_id = COALESCE(?, vendor_id) WHERE id = ?')
-    .run(locationId || null, vendorId || null, w.id);
-  addAudit(req.auth.email, 'transfer_worker', `Transferred ${w.name} -> location=${locationId || w.location_id}, vendor=${vendorId || w.vendor_id}`);
+  if (w.status !== 'approved') return res.status(400).json({ error: `Only an approved worker can be transferred (status is "${w.status}")` });
+  const locationId = body.locationId || w.location_id;
+  const vendorId = body.vendorId || w.vendor_id;
+  const loc = db.prepare('SELECT id, name FROM locations WHERE id = ?').get(locationId);
+  const ven = db.prepare('SELECT id, name FROM vendors WHERE id = ?').get(vendorId);
+  if (!loc || !ven) return res.status(400).json({ error: 'Selected location or vendor does not exist' });
+  if (locationId === w.location_id && vendorId === w.vendor_id) return res.status(400).json({ error: 'Nothing to change — pick a different location or vendor' });
+  const before = { loc: db.prepare('SELECT name FROM locations WHERE id = ?').get(w.location_id), ven: db.prepare('SELECT name FROM vendors WHERE id = ?').get(w.vendor_id) };
+  db.prepare('UPDATE workers SET location_id = ?, vendor_id = ? WHERE id = ?').run(locationId, vendorId, w.id);
+  const detail = `Location ${before.loc ? before.loc.name : '-'} -> ${loc.name}; vendor ${before.ven ? before.ven.name : '-'} -> ${ven.name}`;
+  logEvent(w.id, req.user, 'transfer', detail, reason);
+  addAudit(req.auth.email, 'transfer_worker', `Transferred ${w.name}: ${detail} (${reason})`);
+  res.json(getWorker(w.id));
+});
+
+// R03: one phone per worker; a change needs HR approval. Clearing the bound device lets
+// the worker's next punch bind their new phone (punches.js binds on first use).
+router.post('/:id/reset-device', requirePermission('workers.manage'), (req, res) => {
+  const reason = needReason(req.body || {});
+  if (!reason) return res.status(400).json({ error: 'reason is required' });
+  const w = getScopedWorker(req.user, req.params.id);
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  if (!w.device_id) return res.status(400).json({ error: 'No phone is registered for this worker yet' });
+  db.prepare('UPDATE workers SET device_id = NULL WHERE id = ?').run(w.id);
+  logEvent(w.id, req.user, 'device_reset', 'Registered phone cleared — next punch binds the new phone', reason);
+  addAudit(req.auth.email, 'reset_device', `${w.name}: ${reason}`);
   res.json(getWorker(w.id));
 });
 
