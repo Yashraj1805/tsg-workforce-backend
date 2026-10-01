@@ -61,6 +61,9 @@ const PERMISSIONS = {
   'workers.gatecheck':     ['security', 'site_hr', 'central_hr', 'location_head'],
   // R20 gate tablets: set up / pair / retire a site's kiosk.
   'kiosks.manage':         ['system_admin', 'central_hr'],
+  // Proposal process 3: hiring manager / Site HR request a transfer or exit; Central HR completes it.
+  'requests.raise':        ['reporting_manager', 'site_hr', 'central_hr'],
+  'requests.view':         ['reporting_manager', 'site_hr', 'central_hr', 'location_head'],
 };
 
 // Security's punch access is limited to blocked attempts (BRD: "View blocked punches").

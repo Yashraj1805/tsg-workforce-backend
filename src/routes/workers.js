@@ -310,41 +310,50 @@ router.get('/:id/history', requirePermission('workers.read'), (req, res) => {
   res.json(db.prepare('SELECT * FROM worker_events WHERE worker_id = ? ORDER BY ts DESC').all(w.id));
 });
 
+// Shared by the HR routes below and by change requests (routes/workerRequests.js).
+// Return { error } or { worker }.
+function performExit(w, user, { exitDate, reason, blacklist }) {
+  if (!reason) return { error: 'reason is required' };
+  if (w.status === 'exited') return { error: 'Worker has already exited' };
+  const date = exitDate || time.today();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'exitDate must be YYYY-MM-DD' };
+  db.prepare("UPDATE workers SET status = 'exited', blacklisted = ?, exit_date = ?, exit_reason = ? WHERE id = ?").run(blacklist ? 1 : 0, date, reason, w.id);
+  logEvent(w.id, user, blacklist ? 'exit_blacklisted' : 'exit', `Exited on ${date}${blacklist ? ', blacklisted (Aadhaar, PAN and face can never register again)' : ''}`, reason);
+  addAudit(user.email, 'exit_worker', `Exited ${w.name}${blacklist ? ' (blacklisted)' : ''}: ${reason}`);
+  return { worker: getWorker(w.id) };
+}
+function performTransfer(w, user, { locationId, vendorId, reason }) {
+  if (!reason) return { error: 'reason is required' };
+  if (w.status !== 'approved') return { error: `Only an approved worker can be transferred (status is "${w.status}")` };
+  const toLoc = locationId || w.location_id, toVen = vendorId || w.vendor_id;
+  const loc = db.prepare('SELECT id, name FROM locations WHERE id = ?').get(toLoc);
+  const ven = db.prepare('SELECT id, name FROM vendors WHERE id = ?').get(toVen);
+  if (!loc || !ven) return { error: 'Selected location or vendor does not exist' };
+  if (toLoc === w.location_id && toVen === w.vendor_id) return { error: 'Nothing to change — pick a different location or vendor' };
+  const before = { loc: db.prepare('SELECT name FROM locations WHERE id = ?').get(w.location_id), ven: db.prepare('SELECT name FROM vendors WHERE id = ?').get(w.vendor_id) };
+  db.prepare('UPDATE workers SET location_id = ?, vendor_id = ? WHERE id = ?').run(toLoc, toVen, w.id);
+  const detail = `Location ${before.loc ? before.loc.name : '-'} -> ${loc.name}; vendor ${before.ven ? before.ven.name : '-'} -> ${ven.name}`;
+  logEvent(w.id, user, 'transfer', detail, reason);
+  addAudit(user.email, 'transfer_worker', `Transferred ${w.name}: ${detail} (${reason})`);
+  return { worker: getWorker(w.id) };
+}
+
 router.post('/:id/exit', requirePermission('workers.manage'), (req, res) => {
   const body = req.body || {};
-  const reason = needReason(body);
-  if (!reason) return res.status(400).json({ error: 'reason is required' });
   const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
-  if (w.status === 'exited') return res.status(400).json({ error: 'Worker has already exited' });
-  const blacklist = !!body.blacklist;
-  const exitDate = body.exitDate || time.today();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(exitDate)) return res.status(400).json({ error: 'exitDate must be YYYY-MM-DD' });
-  db.prepare("UPDATE workers SET status = 'exited', blacklisted = ?, exit_date = ?, exit_reason = ? WHERE id = ?").run(blacklist ? 1 : 0, exitDate, reason, w.id);
-  logEvent(w.id, req.user, blacklist ? 'exit_blacklisted' : 'exit', `Exited on ${exitDate}${blacklist ? ', blacklisted (Aadhaar, PAN and face can never register again)' : ''}`, reason);
-  addAudit(req.auth.email, 'exit_worker', `Exited ${w.name}${blacklist ? ' (blacklisted)' : ''}: ${reason}`);
-  res.json(getWorker(w.id));
+  const r = performExit(w, req.user, { exitDate: body.exitDate, reason: needReason(body), blacklist: !!body.blacklist });
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r.worker);
 });
 
 router.post('/:id/transfer', requirePermission('workers.manage'), (req, res) => {
   const body = req.body || {};
-  const reason = needReason(body);
-  if (!reason) return res.status(400).json({ error: 'reason is required' });
   const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
-  if (w.status !== 'approved') return res.status(400).json({ error: `Only an approved worker can be transferred (status is "${w.status}")` });
-  const locationId = body.locationId || w.location_id;
-  const vendorId = body.vendorId || w.vendor_id;
-  const loc = db.prepare('SELECT id, name FROM locations WHERE id = ?').get(locationId);
-  const ven = db.prepare('SELECT id, name FROM vendors WHERE id = ?').get(vendorId);
-  if (!loc || !ven) return res.status(400).json({ error: 'Selected location or vendor does not exist' });
-  if (locationId === w.location_id && vendorId === w.vendor_id) return res.status(400).json({ error: 'Nothing to change — pick a different location or vendor' });
-  const before = { loc: db.prepare('SELECT name FROM locations WHERE id = ?').get(w.location_id), ven: db.prepare('SELECT name FROM vendors WHERE id = ?').get(w.vendor_id) };
-  db.prepare('UPDATE workers SET location_id = ?, vendor_id = ? WHERE id = ?').run(locationId, vendorId, w.id);
-  const detail = `Location ${before.loc ? before.loc.name : '-'} -> ${loc.name}; vendor ${before.ven ? before.ven.name : '-'} -> ${ven.name}`;
-  logEvent(w.id, req.user, 'transfer', detail, reason);
-  addAudit(req.auth.email, 'transfer_worker', `Transferred ${w.name}: ${detail} (${reason})`);
-  res.json(getWorker(w.id));
+  const r = performTransfer(w, req.user, { locationId: body.locationId, vendorId: body.vendorId, reason: needReason(body) });
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r.worker);
 });
 
 // R03: one phone per worker; a change needs HR approval. Clearing the bound device lets
@@ -362,3 +371,4 @@ router.post('/:id/reset-device', requirePermission('workers.manage'), (req, res)
 });
 
 module.exports = router;
+Object.assign(module.exports, { performExit, performTransfer, getScopedWorker, logEvent });
