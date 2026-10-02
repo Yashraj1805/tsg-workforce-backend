@@ -23,7 +23,7 @@ const TELEPORT_MAX_ACCURACY_M = 100; // fixes vaguer than this aren't used for t
 // "borderline on several signals at once" for HR to glance at on the Exceptions screen,
 // without needing to read every face-match note by hand. No extra Gemini call — built
 // entirely from signals evaluatePunch already gathered deciding whether to allow it.
-function computeRiskScore({ accuracy, accuracyLimit, distanceM, radius, faceBorderline, integritySuspicious, offline }) {
+function computeRiskScore({ accuracy, accuracyLimit, distanceM, radius, faceBorderline, integritySuspicious, offline, livenessBorderline }) {
   let score = 0;
   const reasons = [];
   if (accuracy != null && accuracy > accuracyLimit * 0.7) { score += 15; reasons.push('GPS accuracy close to the limit'); }
@@ -31,6 +31,7 @@ function computeRiskScore({ accuracy, accuracyLimit, distanceM, radius, faceBord
   if (faceBorderline) { score += 35; reasons.push('face-match was borderline'); }
   if (integritySuspicious) { score += 30; reasons.push('same coordinates as another day'); }
   if (offline) { score += 10; reasons.push('offline punch'); }
+  if (livenessBorderline) { score += 25; reasons.push('liveness check was borderline'); }
   return { score: Math.min(100, score), reasons };
 }
 
@@ -40,7 +41,7 @@ function computeRiskScore({ accuracy, accuracyLimit, distanceM, radius, faceBord
 // (R19), which passes the reconstructed original time as `ts`.
 // Returns { ok: true, punch } or { ok: false, status, body }.
 async function evaluatePunch(w, input, ts, opts = {}) {
-  const { type, lat, lng, accuracy, selfieDataUrl, deviceId, integrity } = input;
+  const { type, lat, lng, accuracy, selfieDataUrl, deviceId, integrity, livenessFrameDataUrl } = input;
   const block = (reason, status, error, note, distanceM) => {
     const punchId = logBlocked(w, type, lat, lng, accuracy, distanceM == null ? null : distanceM, selfieDataUrl, deviceId, reason, note, ts, opts.offline);
     return { ok: false, status, body: { error, blocked: true, reason, distanceM, accuracy }, punchId };
@@ -148,9 +149,40 @@ async function evaluatePunch(w, input, ts, opts = {}) {
     alertBlockedPunch(w, 'gps_suspicious', integrityNote);
   }
 
+  // Passive liveness (phase 1, anti-spoofing): livenessFrameDataUrl is an earlier,
+  // low-res preview frame the app already captured while locking onto the face (see
+  // scanFaceForPunch in app.js) — a fraction of a second before selfieDataUrl, at no
+  // extra cost to the worker. Same double-check-before-blocking pattern as face-match
+  // above, since a single vision-model call is too noisy to lock a legitimate worker
+  // out on. Optional: older app builds or a lock on the very first preview frame won't
+  // have one, and that's not treated as suspicious on its own.
+  let livenessNote = null;
+  let livenessBorderline = false;
+  if (gemini.isConfigured() && livenessFrameDataUrl) {
+    const first = await gemini.checkLiveness(livenessFrameDataUrl, selfieDataUrl);
+    if (first.ok) {
+      const firstNote = `live=${first.live} confidence=${first.confidence} spoofType=${first.spoofType}: ${first.reason}`;
+      if (!first.live && first.confidence >= 0.75) {
+        const second = await gemini.checkLiveness(livenessFrameDataUrl, selfieDataUrl);
+        const secondNote = second.ok ? `live=${second.live} confidence=${second.confidence} spoofType=${second.spoofType}: ${second.reason}` : `failed: ${second.error}`;
+        if (second.ok && !second.live && second.confidence >= 0.75) {
+          return block('spoof_suspected', 422, 'This looks like a photo or a screen, not a live camera — look straight at the camera and try again', `[liveness check 1] ${firstNote} | [liveness check 2 confirmed] ${secondNote}`, distanceM);
+        }
+        livenessBorderline = true;
+        livenessNote = `[liveness check 1] ${firstNote} | [liveness check 2 did not confirm] ${secondNote} — allowed`;
+      } else {
+        livenessNote = firstNote;
+        livenessBorderline = !first.live || first.confidence < 0.85;
+      }
+    } else {
+      livenessNote = `liveness check unavailable: ${first.error}`;
+    }
+  }
+  faceMatchNote = [faceMatchNote, livenessNote].filter(Boolean).join(' | ') || null;
+
   const risk = computeRiskScore({
     accuracy, accuracyLimit: loc.accuracy_limit, distanceM, radius: loc.radius,
-    faceBorderline, integritySuspicious: !!integrityNote, offline: !!opts.offline,
+    faceBorderline, integritySuspicious: !!integrityNote, offline: !!opts.offline, livenessBorderline,
   });
 
   // Bind the phone on first successful punch (R03).

@@ -4,13 +4,14 @@ const { db, addAudit } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { workerScopeSql, workerIdScopeSql } = require('../rbac');
 const { isLocked } = require('../services/attendance');
+const gemini = require('../services/geminiClient');
 
 const router = express.Router();
 
 // Raised by site HR on a worker's behalf — workers cannot self-raise (BRD screen 10:
 // "Worker cannot edit. Button calls site HR" / R13). The worker must be inside the
 // raiser's scope, so a site HR can't raise for another site's staff.
-router.post('/', requirePermission('regularisations.raise'), (req, res) => {
+router.post('/', requirePermission('regularisations.raise'), async (req, res) => {
   const { workerId, date, reason } = req.body || {};
   if (!workerId || !date || !reason) return res.status(400).json({ error: 'workerId, date and reason are required' });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
@@ -21,8 +22,26 @@ router.post('/', requirePermission('regularisations.raise'), (req, res) => {
   }
   const id = crypto.randomUUID();
   const now = Date.now();
-  db.prepare('INSERT INTO regularisations (id, worker_id, date, reason, maker, maker_id, status, created_at) VALUES (?,?,?,?,?,?,?,?)')
-    .run(id, workerId, date, reason, req.user.name || req.user.email, req.user.id, 'pending', now);
+  // AI triage (non-fatal if it fails or Gemini isn't configured — the request still
+  // gets raised either way, just without the tag/note). recentCount includes this one,
+  // so the approver sees "Nth this month" without having to go count the worker's history.
+  let category = null, triageNote = null;
+  if (gemini.isConfigured()) {
+    try {
+      const recentCount = 1 + db.prepare('SELECT COUNT(*) c FROM regularisations WHERE worker_id = ? AND created_at >= ?').get(workerId, now - 30 * 86400000).c;
+      const r = await gemini.ask(
+        `An HR attendance-correction request. Reason given by the raiser (may be in Hindi, English, or mixed): "${reason}". This worker has had ${recentCount} such request(s), including this one, in the last 30 days. Classify the reason into exactly one category. Then write one short, neutral sentence for the approving HR person — a practical read of whether this looks routine or worth a closer look, based only on the reason text and the 30-day count above, never inventing any other fact about the worker.`,
+        { type: 'object', properties: {
+            category: { type: 'string', enum: ['medical', 'personal', 'official_travel', 'technical_device', 'forgot_punch', 'other'] },
+            triageNote: { type: 'string' },
+          }, required: ['category', 'triageNote'] },
+        8000
+      );
+      if (r.ok) { category = r.category; triageNote = r.triageNote; }
+    } catch (e) { /* non-fatal */ }
+  }
+  db.prepare('INSERT INTO regularisations (id, worker_id, date, reason, maker, maker_id, status, created_at, reason_category, ai_triage_note) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run(id, workerId, date, reason, req.user.name || req.user.email, req.user.id, 'pending', now, category, triageNote);
   addAudit(req.user.email, 'raise_regularisation', `${date} for worker ${workerId}: ${reason}`);
   res.status(201).json(db.prepare('SELECT * FROM regularisations WHERE id = ?').get(id));
 });

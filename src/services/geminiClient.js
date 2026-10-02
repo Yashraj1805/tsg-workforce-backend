@@ -168,10 +168,39 @@ async function checkRegistrationPhoto(photoDataUrl) {
   );
 }
 
+// Passive liveness check (anti-spoofing, phase 1): compares two frames of the SAME
+// punch attempt, captured naturally a fraction of a second apart by the existing
+// face-lock preview loop (app.js scanFaceForPunch — no extra camera call, no added
+// friction for the worker). A static printed photo or a photo held up to a screen
+// can't show the small natural movement a live person does between two close frames;
+// it can also reveal screen/paper artifacts a single still frame might not catch
+// cleanly. This is still an LLM judgement, not a certified liveness API — see the
+// file-level note above. Kept as a separate check from compareFaces (identity) so a
+// spoof is caught even when the spoofed photo happens to be the right person's.
+async function checkLiveness(earlierFrameDataUrl, laterFrameDataUrl) {
+  const earlier = parseDataUrl(earlierFrameDataUrl);
+  const later = parseDataUrl(laterFrameDataUrl);
+  return callGemini(
+    'Anti-spoofing liveness check for a workplace attendance app. Both images are frames from the SAME live camera preview of a worker about to punch in/out, captured roughly half a second to two seconds apart — the earlier frame can come from right after the camera opened, while auto-exposure/focus is still settling, so it is sometimes dark, blank, black, blurry, or shows no clear face for entirely ordinary reasons. Decide whether these two frames show a real, live 3D person in front of the camera, versus a spoof: a printed photo, an ID/registration card, or a phone/tablet/computer screen held up to the camera. IMPORTANT: if either frame is simply black/blank/too dark/blurry/unreadable, or shows no face, that on its own is NOT evidence of spoofing — it is just a camera-warm-up frame you cannot judge, so treat it as live=true with low confidence and spoofType "none", unless you can also see actual spoofing artifacts (see below). The capture pipeline does not correct orientation — ignore rotation entirely, it is not a spoofing signal. Evidence FOR a spoof (needs an actually visible, readable frame): screen glare or reflection, a moire pattern, a visible bezel or edge of the photo/device/card, unnatural flatness, or the two frames being suspiciously pixel-identical (a static photo held still cannot show the small natural changes — slight head position, blink, micro-expression, lighting — a live person shows between two close frames). Evidence AGAINST a spoof (i.e. a good sign): small natural differences between the two frames, normal skin/hair texture and depth, natural uneven lighting on a 3D face. A real person holding fairly still can also look similar between two close frames, so near-identical frames alone are only a weak signal, not proof — weigh it together with the other evidence, and only flag live=false when you see actual spoofing evidence in a readable frame, never just because a frame was dark, blank or unreadable.',
+    [earlier, later],
+    {
+      type: 'object',
+      properties: {
+        live: { type: 'boolean', description: 'true if these look like real live-camera frames of a person (or the frames are just unreadable/inconclusive — default to true), false only if actual spoof evidence is visible' },
+        confidence: { type: 'number', description: '0 to 1, confidence in the live/spoof judgement' },
+        spoofType: { type: 'string', description: '"photo", "card", "screen", "none", or "unclear"' },
+        reason: { type: 'string', description: 'one short sentence' },
+      },
+      required: ['live', 'confidence', 'spoofType', 'reason'],
+    },
+    12000
+  );
+}
+
 // Text-only Gemini call (no images) — the AI assistant (services/aiAssistant.js) uses
 // this for both routing a question to a report and writing the natural-language answer.
 async function ask(promptText, schema, timeoutMs) {
   return callGemini(promptText, [], schema, timeoutMs);
 }
 
-module.exports = { compareFaces, detectFace, readPanCard, findMatchingFace, checkRegistrationPhoto, ask, isConfigured };
+module.exports = { compareFaces, detectFace, readPanCard, findMatchingFace, checkRegistrationPhoto, checkLiveness, ask, isConfigured };

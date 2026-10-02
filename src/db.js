@@ -209,6 +209,24 @@ if (!db.prepare('SELECT 1 FROM jobs LIMIT 1').get()) {
 }
 addColumnIfMissing('regularisations', 'maker_id', 'TEXT');
 addColumnIfMissing('regularisations', 'checker_id', 'TEXT');
+// AI triage at raise time (routes/regularisations.js): a category tag for reporting,
+// and a short note for the approver — e.g. "4th request this month, worth asking about".
+addColumnIfMissing('regularisations', 'reason_category', 'TEXT');
+addColumnIfMissing('regularisations', 'ai_triage_note', 'TEXT');
+// Vendor onboarding KYC: the contact person's (not the company's — Aadhaar is an
+// individual document) Aadhaar + PAN, captured by HR the same way worker KYC is —
+// PAN photo OCR + tamper check, Aadhaar QR scan + UIDAI signature check.
+addColumnIfMissing('vendors', 'contact_pan_photo_data_url', 'TEXT');
+addColumnIfMissing('vendors', 'contact_pan_number', 'TEXT');
+addColumnIfMissing('vendors', 'contact_pan_name', 'TEXT');
+addColumnIfMissing('vendors', 'contact_pan_tamper_note', 'TEXT');
+addColumnIfMissing('vendors', 'contact_pan_verified', 'INTEGER');
+addColumnIfMissing('vendors', 'contact_aadhaar_masked', 'TEXT');
+addColumnIfMissing('vendors', 'contact_aadhaar_key', 'TEXT');
+addColumnIfMissing('vendors', 'contact_aadhaar_name', 'TEXT');
+addColumnIfMissing('vendors', 'contact_aadhaar_qr_format', 'TEXT');
+addColumnIfMissing('vendors', 'contact_aadhaar_qr_signature', 'TEXT');
+addColumnIfMissing('vendors', 'contact_aadhaar_qr_at', 'INTEGER');
 
 function addAudit(user, action, detail) {
   db.prepare('INSERT INTO audit_log (id, ts, user, action, detail) VALUES (?,?,?,?,?)')

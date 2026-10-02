@@ -40,10 +40,13 @@ function findBlockedPunches(scope, from, to) {
       ORDER BY p.ts DESC LIMIT 100`).all(from, to, ...scope.args);
 }
 
-async function extractParams(question) {
+async function extractParams(question, history) {
+  const historyText = history && history.length
+    ? `\nRecent conversation (oldest first, for resolving follow-ups like "uska", "aur kal ka?", "what about last week" that refer back to this):\n${history.map(h => `Q: ${h.question}\nA: ${h.answer}`).join('\n')}\n`
+    : '';
   return gemini.ask(
-    `Today's date is ${today()} (YYYY-MM-DD), current month ${currentMonth()}. A workplace-attendance HR user asked this question (may be in Hindi, English, or mixed):\n"${question}"\n` +
-    'Work out what data would answer it. "topic" is "blocked_punches" for anything about blocked/rejected/fraud/fake-GPS/suspicious punch attempts, else "attendance". "mode" is "summary" for a live today\'s-counts attendance question (how many present/absent/not-punched right now, with no specific date range), or "detail" for anything about a specific date range, a specific worker, or a listing (always "detail" for blocked_punches). Resolve relative dates (today, yesterday, this week, this month, last month) into actual YYYY-MM-DD dates using the anchor date above. Leave a field blank if the question does not mention it — never guess a worker, site or vendor name that is not actually in the question.',
+    `Today's date is ${today()} (YYYY-MM-DD), current month ${currentMonth()}.${historyText}A workplace-attendance HR user asked this question (may be in Hindi, English, or mixed):\n"${question}"\n` +
+    'Work out what data would answer it. "topic" is "blocked_punches" for anything about blocked/rejected/fraud/fake-GPS/suspicious punch attempts, else "attendance". "mode" is "summary" for a live today\'s-counts attendance question (how many present/absent/not-punched right now, with no specific date range), or "detail" for anything about a specific date range, a specific worker, or a listing (always "detail" for blocked_punches). Resolve relative dates (today, yesterday, this week, this month, last month) into actual YYYY-MM-DD dates using the anchor date above. If the question is a follow-up referring back to the conversation above (e.g. "uska", "and him", "what about last week" without repeating who/what), use the conversation to fill in the missing worker/site/vendor/date — otherwise leave a field blank. Never guess a name that was not actually mentioned anywhere.',
     {
       type: 'object',
       properties: {
@@ -70,11 +73,11 @@ async function composeAnswer(question, data) {
   );
 }
 
-async function ask(question, user) {
+async function ask(question, user, history) {
   if (!gemini.isConfigured()) return { ok: false, error: 'AI assistant needs GEMINI_API_KEY configured' };
   const scope = workerScopeSql(user, 'w');
 
-  const extracted = await extractParams(question);
+  const extracted = await extractParams(question, history);
   if (!extracted.ok) return { ok: false, error: extracted.error || 'Could not understand the question' };
 
   let data;

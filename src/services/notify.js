@@ -78,11 +78,41 @@ async function sendWhatsApp(toMobile, message) {
   } catch (e) { console.error('[WhatsApp failed]', toMobile, e.message); return { ok: false, error: e.message }; }
 }
 
-function sendOtp(identifier, purpose, code) {
+// WhatsApp OTP uses a Meta-approved *authentication* template (WATI_OTP_TEMPLATE, the
+// template's name in WATI) — a free-text session message can't open a conversation, so
+// sendWhatsApp() above is not usable for this. The template's one variable is the code.
+async function sendWhatsAppOtp(toMobile, code) {
+  if (!process.env.WATI_API_URL || !process.env.WATI_API_TOKEN || !process.env.WATI_OTP_TEMPLATE) return { ok: false, skipped: true };
+  try {
+    const r = await fetch(`${process.env.WATI_API_URL.replace(/\/$/, '')}/api/v1/sendTemplateMessage?whatsappNumber=91${toMobile}`, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + process.env.WATI_API_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template_name: process.env.WATI_OTP_TEMPLATE, broadcast_name: 'otp', parameters: [{ name: '1', value: code }] }),
+    });
+    const body = await r.json().catch(() => ({}));
+    // WATI returns 200 with result:false for an unknown/non-WhatsApp number — that must
+    // count as a failure so the SMS fallback kicks in, not as "sent".
+    if (!r.ok || body.result === false) throw new Error(body.info || `WATI HTTP ${r.status}`);
+    return { ok: true };
+  } catch (e) { console.error('[WhatsApp OTP failed]', toMobile, e.message); return { ok: false, error: e.message }; }
+}
+
+// Returns { channel: 'whatsapp' | 'sms' | 'email' | 'none' } — which channel actually
+// accepted the message, so the login screen can tell the worker where to look.
+// Mobile numbers: WhatsApp first (cheaper, lands faster, no DLT), SMS if WhatsApp isn't
+// configured / isn't on that number / fails. `preferred: 'sms'` skips WhatsApp — the
+// "didn't get it on WhatsApp? send on SMS" button.
+async function sendOtp(identifier, purpose, code, preferred) {
   const msg = `${code} is your TSG Workforce OTP. Valid 5 minutes. Do not share it.`;
-  if (/^\d{10}$/.test(identifier)) sendSms(identifier, msg);
-  else sendEmail(identifier, 'TSG Workforce login OTP', msg);
-  if (!process.env.SMS_WEBHOOK_URL || !process.env.SMTP_HOST) console.log(`[OTP] ${purpose} OTP for ${identifier}: ${code}`);
+  let channel = 'none';
+  if (/^\d{10}$/.test(identifier)) {
+    if (preferred !== 'sms') { const w = await sendWhatsAppOtp(identifier, code); if (w.ok) channel = 'whatsapp'; }
+    if (channel === 'none') { const s = await sendSms(identifier, msg); if (s.ok) channel = 'sms'; }
+  } else {
+    const e = await sendEmail(identifier, 'TSG Workforce login OTP', msg);
+    if (e.ok) channel = 'email';
+  }
+  if (channel === 'none') console.log(`[OTP] ${purpose} OTP for ${identifier}: ${code} (no delivery channel configured)`);
+  return { channel };
 }
 
 // Worker-facing status SMS (BRD §10 screen 12: "SMS when approved or sent back").
@@ -91,4 +121,4 @@ function notifyWorker(worker, message) {
   sendSms(worker.mobile, message).then(r => { if (r.ok) addAudit('system', 'sms_sent', `${worker.mobile}: ${message.slice(0, 80)}`); });
 }
 
-module.exports = { sendSms, sendEmail, sendWhatsApp, sendOtp, notifyWorker };
+module.exports = { sendSms, sendEmail, sendWhatsApp, sendWhatsAppOtp, sendOtp, notifyWorker };

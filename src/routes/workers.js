@@ -10,6 +10,7 @@ const { checkDocument, checkFace, checkRegistrationPhoto } = require('../service
 const { haversineMeters } = require('../services/geo');
 const { EDUCATION, EXPERIENCE, CONSENT } = require('../registrationOptions');
 const { notifyWorker } = require('../services/notify');
+const gemini = require('../services/geminiClient');
 
 const router = express.Router();
 
@@ -222,6 +223,41 @@ router.get('/:id', requirePermission('workers.read'), (req, res) => {
   const location = w.location_id ? db.prepare('SELECT id, name, brand, lat, lng, radius, accuracy_limit FROM locations WHERE id = ?').get(w.location_id) : null;
   const vendor = w.vendor_id ? db.prepare('SELECT id, name, phone FROM vendors WHERE id = ?').get(w.vendor_id) : null;
   res.json({ ...w, location, vendor });
+});
+
+// AI absenteeism-risk read (on demand, not computed automatically for every worker —
+// costs a Gemini call, so it only runs when HR actually opens it for one worker). No
+// training data or model needed: the last 30 days of present/absent is handed straight
+// to Gemini to read for a trend/pattern/cluster, same technique as the other AI checks
+// in this app (risk score aside, which is a cheap deterministic rule, not this).
+router.get('/:id/absenteeism-risk', requirePermission('workers.read'), async (req, res) => {
+  const w = getScopedWorker(req.user, req.params.id);
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  if (!gemini.isConfigured()) return res.status(503).json({ error: 'AI risk check needs GEMINI_API_KEY configured' });
+  const since = Date.now() - 30 * 86400000;
+  const presentDays = db.prepare(`SELECT DISTINCT ${time.sqlDay('ts')} AS d FROM punches WHERE worker_id = ? AND type = 'in' AND result = 'ok' AND ts >= ?`).all(w.id, since).map(r => r.d);
+  const presentSet = new Set(presentDays);
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = time.dayOf(Date.now() - i * 86400000);
+    days.push({ date: d, weekday: new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }), present: presentSet.has(d) });
+  }
+  const presentCount = days.filter(x => x.present).length;
+  try {
+    const r = await gemini.ask(
+      `A worker's attendance over the last 30 days at a workplace-attendance system (JSON, oldest to newest; "present" means they punched in that day — weekly offs aren't distinguished here, so judge patterns loosely, not as if every gap were an unexcused absence): ${JSON.stringify(days)}\n` +
+      `Present ${presentCount} of 30 days. Assess absenteeism risk going forward: is there a worsening trend (more recent absences than earlier in the window), a repeating pattern (e.g. always absent the same weekday), or a cluster that looks likely to continue — versus an isolated blip that is not a concern. This is reading the pattern given, not a statistical prediction, so say so plainly rather than sounding more certain than the data supports.`,
+      { type: 'object', properties: {
+          level: { type: 'string', enum: ['low', 'medium', 'high'] },
+          reason: { type: 'string', description: 'one or two short sentences, citing what in the pattern supports the level' },
+        }, required: ['level', 'reason'] },
+      10000
+    );
+    if (!r.ok) return res.status(502).json({ error: r.error });
+    res.json({ level: r.level, reason: r.reason, presentDays: presentCount, totalDays: 30 });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 // R08: every approved worker is linked to one reporting manager (TSG employee) with an

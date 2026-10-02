@@ -9,10 +9,10 @@ const { startSession, endSession, auditFailedLogin } = require('../services/sess
 const router = express.Router();
 
 // ---- Worker: mobile + OTP login (BRD R03) ----
-router.post('/worker/otp/request', (req, res) => {
-  const { mobile } = req.body || {};
+router.post('/worker/otp/request', async (req, res) => {
+  const { mobile, channel } = req.body || {};
   if (!/^\d{10}$/.test(mobile || '')) return res.status(400).json({ error: 'Valid 10-digit mobile number required' });
-  const result = generateOtp(mobile, 'worker_login');
+  const result = await generateOtp(mobile, 'worker_login', { channel: channel === 'sms' ? 'sms' : undefined });
   if (result.error) return res.status(429).json(result); // resend wait / 15-min lock
   res.json(result);
 });
@@ -41,10 +41,10 @@ router.post('/worker/otp/verify', (req, res) => {
 });
 
 // ---- HR: company email + OTP login (BRD R18) ----
-router.post('/hr/otp/request', (req, res) => {
+router.post('/hr/otp/request', async (req, res) => {
   const { email } = req.body || {};
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '')) return res.status(400).json({ error: 'Valid email required' });
-  const result = generateOtp(email, 'hr_login');
+  const result = await generateOtp(email, 'hr_login');
   if (result.error) return res.status(429).json(result);
   res.json(result);
 });

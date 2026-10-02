@@ -24,8 +24,9 @@ function lockedFor(identifier, purpose) {
   return l && l.locked_until > Date.now() ? Math.ceil((l.locked_until - Date.now()) / 1000) : 0;
 }
 
-// Returns { sentTo, devOtp?, expiresInSeconds, resendInSeconds } or { error, retryInSeconds }.
-function generateOtp(identifier, purpose) {
+// Returns { sentTo, channel, devOtp?, expiresInSeconds, resendInSeconds } or { error, retryInSeconds }.
+// opts.channel = 'sms' forces SMS for a mobile (skips the WhatsApp-first attempt).
+async function generateOtp(identifier, purpose, opts = {}) {
   const locked = lockedFor(identifier, purpose);
   if (locked) return { error: `Too many wrong OTPs — try again in ${Math.ceil(locked / 60)} min`, retryInSeconds: locked };
   const prev = db.prepare('SELECT sent_at FROM otp_codes WHERE identifier = ? AND purpose = ?').get(identifier, purpose);
@@ -37,14 +38,15 @@ function generateOtp(identifier, purpose) {
   const now = Date.now();
   db.prepare('INSERT OR REPLACE INTO otp_codes (identifier, code, purpose, expires_at, attempts, sent_at) VALUES (?,?,?,?,0,?)')
     .run(identifier, code, purpose, now + OTP_TTL_MS, now);
-  deliverOtp(identifier, purpose, code);
-  return { sentTo: identifier, devOtp: isDev ? code : undefined, expiresInSeconds: OTP_TTL_MS / 1000, resendInSeconds: RESEND_AFTER_MS / 1000 };
+  const channel = await deliverOtp(identifier, purpose, code, opts.channel);
+  return { sentTo: identifier, channel, devOtp: isDev ? code : undefined, expiresInSeconds: OTP_TTL_MS / 1000, resendInSeconds: RESEND_AFTER_MS / 1000 };
 }
 
-function deliverOtp(identifier, purpose, code) {
-  // Real delivery goes through services/notify.js once an SMS/email provider is set.
-  try { require('./notify').sendOtp(identifier, purpose, code); }
-  catch (e) { console.log(`[OTP] ${purpose} OTP for ${identifier}: ${code} (delivery failed: ${e.message})`); }
+// Awaited so the response can say which channel took it. Delivery failing never fails
+// the request — in dev the code is in the response anyway; in prod the worker retries.
+async function deliverOtp(identifier, purpose, code, preferred) {
+  try { return (await require('./notify').sendOtp(identifier, purpose, code, preferred)).channel; }
+  catch (e) { console.log(`[OTP] ${purpose} OTP for ${identifier}: ${code} (delivery failed: ${e.message})`); return 'none'; }
 }
 
 function verifyOtp(identifier, purpose, code) {

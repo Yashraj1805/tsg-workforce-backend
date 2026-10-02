@@ -10,7 +10,7 @@ const { db, addAudit } = require('../db');
 const { sendEmail, sendWhatsApp } = require('./notify');
 const reports = require('./reports');
 const { daysByVendor } = require('./attendance');
-const { today, dayOf } = require('./time');
+const { today, dayOf, monthRange } = require('./time');
 const gemini = require('./geminiClient');
 
 // One AI-written insight sentence for the weekly summary (the one report where a human
@@ -30,6 +30,23 @@ async function aiInsight(context) {
   } catch (e) { return ''; }
 }
 
+// Broader synthesis for the monthly exec summary (below) — a short paragraph across the
+// whole workforce (every location/vendor, not one), for the one reader who wants the
+// state of the business, not a number list. Same "only state what's in the data" rule
+// and silent-failure behaviour as aiInsight above.
+async function aiExecSummary(context) {
+  if (!gemini.isConfigured()) return '';
+  try {
+    const r = await gemini.ask(
+      `Last month's full workforce data for a contract-workforce attendance system, across every location and vendor (JSON): ${JSON.stringify(context).slice(0, 4000)}\n` +
+      'Write a short exec-level paragraph (2-4 sentences) for the person who runs the business — the overall picture, the one or two things most worth their attention (a location or vendor trending badly, a billing gap, a spike in blocked/risky punches), and anything that looks healthy and needs no action. Only state what the data above actually shows, never invent a number or name not present in it. Plain, direct language, no corporate filler.',
+      { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] },
+      8000
+    );
+    return r.ok ? r.summary : '';
+  } catch (e) { return ''; }
+}
+
 db.exec(`CREATE TABLE IF NOT EXISTS email_settings (key TEXT PRIMARY KEY, enabled INTEGER NOT NULL, time TEXT NOT NULL, weekday INTEGER, extra_recipients TEXT, updated_by TEXT, updated_at INTEGER)`);
 db.exec(`CREATE TABLE IF NOT EXISTS email_runs (id TEXT PRIMARY KEY, report TEXT NOT NULL, period TEXT NOT NULL, ran_at INTEGER NOT NULL, trigger TEXT, messages INTEGER, sent INTEGER, note TEXT)`);
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS email_runs_period ON email_runs(report, period) WHERE trigger = \'schedule\'');
@@ -43,6 +60,7 @@ const REPORTS = [
   { key: 'weekly_summary', title: 'Weekly summary', to: 'Central HR', schedule: 'weekly', weekday: 1, time: '09:00', shows: 'Attendance % by location and vendor' },
   { key: 'muster_roll', title: 'Muster roll', to: 'HR, Finance, vendor', schedule: 'monthly', time: '09:00', shows: 'Day-wise attendance per vendor (last month)' },
   { key: 'vendor_bill', title: 'Vendor bill check', to: 'Finance (+ Purchase as extra receiver)', schedule: 'monthly', time: '09:30', shows: 'System days per vendor (last month)' },
+  { key: 'monthly_exec_summary', title: 'Monthly workforce summary', to: 'System Admin', schedule: 'monthly', time: '10:00', shows: 'AI summary across every location/vendor: attendance, billing gaps, blocked/risky punches' },
 ];
 
 function settings() {
@@ -189,6 +207,66 @@ const BUILDERS = {
     if (!rows.length) return [];
     return [{ to, subject: `Vendor bill check — ${month}`, text: ['System days per vendor (vendors are paid only on these):', ...rows.map(r => `  ${r.vendor}: ${r.systemDays} days${r.gap !== '' ? `, invoice ${r.invoiceDays} (gap ${r.gap > 0 ? '+' : ''}${r.gap})` : ''}`)].join('\n'),
       attachments: [{ filename: `vendor-bill-check-${month}.xlsx`, content: await xlsx('Vendor bill check', [{ header: 'Vendor', key: 'vendor', width: 24 }, { header: 'GSTIN', key: 'gstin', width: 18 }, { header: 'Workers', key: 'workers', width: 9 }, { header: 'System days', key: 'systemDays', width: 12 }, { header: 'Invoice days', key: 'invoiceDays', width: 12 }, { header: 'Gap', key: 'gap', width: 8 }], rows) }] }];
+  },
+  // Monthly "state of the workforce" digest for the person who runs the business — not
+  // scoped to one team/site like every other report here, and not just numbers: an AI
+  // paragraph synthesizing the month across every location and vendor at once.
+  //
+  // Deliberately sent to system_admin, even though rbac.js documents that role as
+  // ROLE_SCOPE 'none' — "sets up masters/users; no access to worker data" — in the
+  // live app. That comment is about in-session API access (a system_admin browsing
+  // worker records through the portal), which this is not: this is a once-a-month
+  // executive digest pushed out to a named person by email, the same distinction as a
+  // CEO getting an ops summary without having day-to-day system access themselves.
+  // Built this way intentionally (requested directly by TSG's MD, who is the bootstrap
+  // system_admin — see ADMIN_BOOTSTRAP_EMAILS), not a scope-check that was missed. If a
+  // future system_admin shouldn't receive it, change the audience in REPORTS above
+  // (key: 'monthly_exec_summary', currently `to: 'System Admin'`), not the query scope
+  // here — the data-gathering below is correctly unscoped on purpose for this one report.
+  async monthly_exec_summary() {
+    const month = lastMonth();
+    const to = usersWithRole('system_admin').map(u => u.email);
+    if (!to.length) return [];
+    const [y, m] = month.split('-').map(Number);
+    const start = `${month}-01`, end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+    const rows = reports.attendanceRows(allScope, {}, start, end).filter(r => r.status !== 'Weekly off');
+    const pct = (list) => list.length ? Math.round(100 * list.filter(r => /^Present|Half/.test(r.status)).length / list.length) : 0;
+    const group = (k) => Object.entries(rows.reduce((acc, r) => { (acc[r[k] || '-'] = acc[r[k] || '-'] || []).push(r); return acc; }, {})).map(([name, list]) => ({ name, days: list.length, pct: pct(list) }));
+    const byLoc = group('location'), byVendor = group('vendor');
+
+    const { from, to: toMs } = monthRange(month);
+    const blockedCount = db.prepare('SELECT COUNT(*) c FROM punches WHERE result = ? AND ts >= ? AND ts < ?').get('blocked', from, toMs).c;
+    const highRiskCount = db.prepare('SELECT COUNT(*) c FROM punches WHERE result = ? AND risk_score >= 50 AND ts >= ? AND ts < ?').get('ok', from, toMs).c;
+    const pendingApprovals = db.prepare("SELECT COUNT(*) c FROM workers WHERE status = 'pending'").get().c;
+
+    const totals = daysByVendor(month, allScope);
+    const billingRows = db.prepare('SELECT id, name FROM vendors').all().map(v => {
+      const inv = db.prepare('SELECT invoice_days FROM vendor_invoices WHERE vendor_id = ? AND month = ?').get(v.id, month);
+      const sys = totals[v.id] ? Math.round(totals[v.id].days * 10) / 10 : 0;
+      return { vendor: v.name, systemDays: sys, invoiceDays: inv ? inv.invoice_days : null, gap: inv ? Math.round((inv.invoice_days - sys) * 10) / 10 : null };
+    }).filter(r => r.systemDays || r.invoiceDays != null);
+    const billingGaps = billingRows.filter(r => r.gap != null && r.gap !== 0);
+
+    const context = { month, overallPercent: pct(rows), byLocation: byLoc, byVendor, blockedPunches: blockedCount, highRiskPunches: highRiskCount, pendingApprovals, vendorsWithBillingGap: billingGaps.length, billingGaps };
+    const summary = await aiExecSummary(context);
+
+    const text = [
+      `Workforce summary — ${month}`,
+      ...(summary ? ['', summary] : []),
+      '', `Overall attendance: ${pct(rows)}% (${rows.length} worker-days across ${byLoc.length} locations, ${byVendor.length} vendors).`,
+      `Blocked punch attempts: ${blockedCount}. Allowed but risky: ${highRiskCount}.`,
+      `Pending worker approvals: ${pendingApprovals}.`,
+      `Vendors with a billing gap (invoice vs system days): ${billingGaps.length}${billingGaps.length ? ' — ' + billingGaps.slice(0, 5).map(r => `${r.vendor} (${r.gap > 0 ? '+' : ''}${r.gap})`).join(', ') : ''}.`,
+      '', 'Full location/vendor/billing detail attached in Excel.',
+    ].join('\n');
+    const locCols = [{ header: 'Location', key: 'name', width: 24 }, { header: 'Worker-days', key: 'days', width: 12 }, { header: 'Attendance %', key: 'pct', width: 12 }];
+    const venCols = [{ header: 'Vendor', key: 'name', width: 24 }, { header: 'Worker-days', key: 'days', width: 12 }, { header: 'Attendance %', key: 'pct', width: 12 }];
+    const billCols = [{ header: 'Vendor', key: 'vendor', width: 24 }, { header: 'System days', key: 'systemDays', width: 12 }, { header: 'Invoice days', key: 'invoiceDays', width: 12 }, { header: 'Gap', key: 'gap', width: 8 }];
+    const buf = await reports.toXlsx([
+      { name: 'By location', columns: locCols, rows: byLoc }, { name: 'By vendor', columns: venCols, rows: byVendor },
+      { name: 'Billing gaps', columns: billCols, rows: billingRows },
+    ]);
+    return [{ to, subject: `Monthly workforce summary — ${month} — ${pct(rows)}% attendance`, text, attachments: [{ filename: `workforce-summary-${month}.xlsx`, content: buf }] }];
   },
 };
 

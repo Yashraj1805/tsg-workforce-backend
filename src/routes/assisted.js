@@ -26,7 +26,7 @@ function needLocation(user) {
   return null;
 }
 
-router.post('/otp/request', requirePermission('workers.register_assisted'), (req, res) => {
+router.post('/otp/request', requirePermission('workers.register_assisted'), async (req, res) => {
   const { mobile } = req.body || {};
   if (!/^\d{10}$/.test(mobile || '')) return res.status(400).json({ error: 'Valid 10-digit mobile number required' });
   const noLoc = needLocation(req.user);
@@ -34,7 +34,7 @@ router.post('/otp/request', requirePermission('workers.register_assisted'), (req
   const existing = db.prepare('SELECT status, blacklisted FROM workers WHERE mobile = ?').get(mobile);
   if (existing && existing.blacklisted) return res.status(403).json({ error: 'This mobile belongs to a blacklisted worker and cannot register again' });
   if (existing && !['draft', 'sent_back'].includes(existing.status)) return res.status(409).json({ error: `This mobile is already registered (status: ${existing.status})` });
-  const result = generateOtp(mobile, PURPOSE); // sent to the worker's mobile, not HR's
+  const result = await generateOtp(mobile, PURPOSE, { channel: req.body.channel === 'sms' ? 'sms' : undefined }); // sent to the worker's mobile, not HR's
   if (result.error) return res.status(429).json(result);
   addAudit(req.user.email, 'assisted_registration_otp', `OTP sent to worker mobile ${mobile}`);
   res.json(result);
