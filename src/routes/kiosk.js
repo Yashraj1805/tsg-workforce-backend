@@ -13,6 +13,7 @@ const { db, addAudit } = require('../db');
 const { issueToken, requirePermission, requireKiosk } = require('../middleware/auth');
 const { startSession } = require('../services/sessions');
 const { evaluatePunch } = require('./punches');
+const gemini = require('../services/geminiClient');
 const { sqlDay, today } = require('../services/time');
 
 db.exec(`CREATE TABLE IF NOT EXISTS kiosks (id TEXT PRIMARY KEY, name TEXT NOT NULL, location_id TEXT NOT NULL REFERENCES locations(id),
@@ -66,6 +67,18 @@ router.post('/kiosk/pair', (req, res) => {
   const token = issueToken({ sub: k.id, role: 'kiosk', sid }, '365d');
   const loc = db.prepare('SELECT id, name, lat, lng, radius FROM locations WHERE id = ?').get(k.location_id);
   res.json({ token, kiosk: { id: k.id, name: k.name, location: loc } });
+});
+
+// Same "is a face framed yet" poll the phone uses (routes/kyc.js face-detect), for the
+// tablet's session. The phone route is worker-only, so without this the tablet's
+// face-lock loop got 403 on every poll and timed out before any punch was attempted.
+router.post('/kiosk/face-detect', requireKiosk, async (req, res) => {
+  const { frameDataUrl } = req.body || {};
+  if (!frameDataUrl) return res.status(400).json({ error: 'frameDataUrl is required' });
+  if (!gemini.isConfigured()) return res.status(503).json({ error: 'Gemini not configured — auto-scan unavailable' });
+  const result = await gemini.detectFace(frameDataUrl);
+  if (!result.ok) return res.status(502).json({ error: result.error });
+  res.json({ faceDetected: result.faceDetected, reason: result.reason });
 });
 
 router.get('/kiosk/me', requireKiosk, (req, res) => {
