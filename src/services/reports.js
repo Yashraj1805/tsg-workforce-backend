@@ -34,13 +34,15 @@ function dashboard(scope, f, day) {
   const punches = db.prepare(`SELECT worker_id, type, result FROM punches WHERE ${sqlDay('ts')} = ?`).all(d).filter(p => ids.has(p.worker_id));
   const inSet = new Set(punches.filter(p => p.result === 'ok' && p.type === 'in').map(p => p.worker_id));
   const outSet = new Set(punches.filter(p => p.result === 'ok' && p.type === 'out').map(p => p.worker_id));
-  const byLocation = {};
+  const byLocation = {}, byVendor = {};
   for (const w of workers) {
-    const k = w.location_name || '—';
+    const k = w.location_name || '—', vk = w.vendor_name || '—';
     byLocation[k] = byLocation[k] || { location: k, active: 0, punchedIn: 0, punchedOut: 0 };
     byLocation[k].active++;
-    if (inSet.has(w.id)) byLocation[k].punchedIn++;
-    if (outSet.has(w.id)) byLocation[k].punchedOut++;
+    byVendor[vk] = byVendor[vk] || { vendor: vk, active: 0, punchedIn: 0, punchedOut: 0 };
+    byVendor[vk].active++;
+    if (inSet.has(w.id)) { byLocation[k].punchedIn++; byVendor[vk].punchedIn++; }
+    if (outSet.has(w.id)) { byLocation[k].punchedOut++; byVendor[vk].punchedOut++; }
   }
   return {
     date: d,
@@ -52,6 +54,7 @@ function dashboard(scope, f, day) {
     blocked: punches.filter(p => p.result === 'blocked').length,
     pendingApprovals: db.prepare(`SELECT COUNT(*) n FROM workers w LEFT JOIN locations l ON l.id = w.location_id WHERE w.status = 'pending' AND ${scope.sql}${filterSql(f).sql}`).get(...scope.args, ...filterSql(f).args).n,
     byLocation: Object.values(byLocation),
+    byVendor: Object.values(byVendor),
   };
 }
 

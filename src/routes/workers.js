@@ -202,13 +202,16 @@ router.get('/gate-check', requirePermission('workers.gatecheck'), (req, res) => 
 
 // Every admin read goes through the caller's scope (rbac.js) — e.g. a site HR only
 // ever sees their own location's workers, a vendor coordinator only their vendor's.
+// vendor_name / location_name are joined in so a list can say which agency each
+// worker came from without a lookup per row.
 router.get('/', requirePermission('workers.read'), (req, res) => {
   const { status } = req.query;
-  const scope = workerScopeSql(req.user);
-  let sql = `SELECT * FROM workers WHERE ${scope.sql}`;
+  const scope = workerScopeSql(req.user, 'workers');
+  let sql = `SELECT workers.*, v.name AS vendor_name, l.name AS location_name FROM workers
+    LEFT JOIN vendors v ON v.id = workers.vendor_id LEFT JOIN locations l ON l.id = workers.location_id WHERE ${scope.sql}`;
   const args = [...scope.args];
-  if (status) { sql += ' AND status = ?'; args.push(status); }
-  res.json(db.prepare(sql + ' ORDER BY created_at DESC').all(...args));
+  if (status) { sql += ' AND workers.status = ?'; args.push(status); }
+  res.json(db.prepare(sql + ' ORDER BY workers.created_at DESC').all(...args));
 });
 
 // Out-of-scope workers 404 rather than 403, so the response doesn't confirm they exist.

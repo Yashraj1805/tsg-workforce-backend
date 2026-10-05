@@ -7,6 +7,9 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js"
   },
+  "engines": {
+    "node": ">=22.5"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
