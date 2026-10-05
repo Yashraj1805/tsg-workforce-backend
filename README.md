@@ -31,7 +31,7 @@ Every security check runs here on the server — the app only reports what the p
 - **WATI** (`WATI_*`) — WhatsApp copy of the manager's email.
 - **Gemini** (`GEMINI_API_KEY`) — face match, spoof check, photo check, PAN OCR. Not a certified biometric API (see `geminiClient.js`); swap for a licensed one when procured.
 - Hosting in India on an encrypted volume, `BACKUP_DIR` on separate storage, HTTPS, and legal sign-off of the consent text (`src/registrationOptions.js`, marked DRAFT).
-- Production: set `NODE_ENV=production` and `ADMIN_BOOTSTRAP_EMAILS` (see "Roles and access").
+- Production: set `NODE_ENV=production`, `ADMIN_BOOTSTRAP_EMAILS` and `ADMIN_BOOTSTRAP_PASSWORD` (see "Roles and access").
 
 ## Setup
 
@@ -59,7 +59,7 @@ Server listens on `http://localhost:4000` (override with `PORT` in `.env`).
 ## Smoke-tested (2026-09-30)
 
 Ran the full loop manually against a live instance before calling this done:
-worker OTP login → HR OTP login → HR creates vendor + location → punch attempt from
+worker OTP login → HR password login → HR creates vendor + location → punch attempt from
 13km away correctly blocked (`outside_geofence`) → punch-in from inside the geofence
 succeeds → duplicate punch-in same day correctly rejected → punch from an unregistered
 second device correctly rejected → punch-out succeeds → HR attendance register and
@@ -75,7 +75,7 @@ that's not the same as having actually called their sandbox.
 
 | Area | Endpoints |
 |---|---|
-| Auth | `POST /api/auth/worker/otp/{request,verify}`, `POST /api/auth/hr/otp/{request,verify}`, `POST /api/auth/logout`, `GET /api/auth/me` |
+| Auth | `POST /api/auth/worker/otp/{request,verify}`, `POST /api/auth/hr/login` (email + password), `POST /api/auth/hr/change-password`, `POST /api/auth/logout`, `GET /api/auth/me` |
 | Worker profile | `GET/PUT /api/workers/me`, `POST /api/workers/me/{submit,consent,site-from-gps}`, `GET /api/registration-options` |
 | HR: workers | `GET /api/workers`, `GET /api/workers/:id[/history]`, `POST /api/workers/:id/{approve,send-back,reject,exit,transfer,reset-device}`, `PUT /api/workers/:id/reporting-manager`, `GET /api/workers/gate-check` |
 | Assisted registration | `POST /api/assisted/otp/{request,verify}` (Site HR) |
@@ -115,8 +115,11 @@ Role and scope are re-read from `hr_users` on every request, so a change or deac
 by a System Admin applies immediately, not when the token expires. A scoped role with
 no location/vendor assigned sees nothing (fails closed).
 
-**Getting admin users in:** a System Admin creates them (`POST /api/admin-users`). The first
-System Admin comes from `ADMIN_BOOTSTRAP_EMAILS` in `.env`. In production any other
-unknown email is refused at login. On a dev server (`NODE_ENV` not `production`), an
-unknown email is still auto-created on first login, with the role picked on the
-login screen (default Central HR), so every role can be tried out.
+**Getting admin users in:** admin login is email + the user's own password
+(`POST /api/auth/hr/login`; scrypt-hashed, 5 wrong tries locks the email for 15 min).
+A System Admin creates each user with a temporary password (`POST /api/admin-users`),
+which the user must replace at first login (`POST /api/auth/hr/change-password`); a
+forgotten one is reset by a System Admin (`POST /api/admin-users/:id/reset-password`).
+The first System Admin comes from `ADMIN_BOOTSTRAP_EMAILS` + `ADMIN_BOOTSTRAP_PASSWORD`
+in `.env`. Nothing is auto-created at login on any server — an unknown email or wrong
+password gets the same "Email or password is incorrect".

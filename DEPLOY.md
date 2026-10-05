@@ -23,6 +23,7 @@ break a deploy:
    | `GEMINI_API_KEY` | same as local |
    | `GEMINI_MODEL` | `gemini-3.5-flash-lite` |
    | `ADMIN_BOOTSTRAP_EMAILS` | `harpreet@thesachdevgroup.com` |
+   | `ADMIN_BOOTSTRAP_PASSWORD` | a temporary password for that account (changed at first login) |
    | `SETU_BASE_URL` | `https://dg-sandbox.setu.co` (until live Setu creds exist) |
    | `NODE_ENV` | see below |
 
@@ -34,17 +35,18 @@ break a deploy:
 
 ## NODE_ENV — read this before setting it
 
-- **`development`** (what to use for live testing right now): OTPs are returned in
-  the API response and shown on the login screen, so anyone can log in without
-  SMS/WhatsApp/email being set up. New HR emails auto-create accounts. The dev
-  "skip Aadhaar/PAN" button shows in registration. **Do not use this with real
-  worker data you care about** — it's a test mode.
-- **`production`**: OTPs are only delivered, never returned. That means
-  **nobody can log in** until at least one of these is configured:
-  - workers: `WATI_API_URL` + `WATI_API_TOKEN` + `WATI_OTP_TEMPLATE` (WhatsApp)
+HR/admin login is email + password on every server (no OTP, nothing auto-created):
+the first System Admin comes from `ADMIN_BOOTSTRAP_EMAILS` + `ADMIN_BOOTSTRAP_PASSWORD`
+and creates everyone else from Users, each with a temporary password they must change.
+
+- **`development`** (what to use for live testing right now): **worker** OTPs are
+  returned in the API response and shown on the login screen, so workers can log in
+  without SMS/WhatsApp being set up. The dev "skip Aadhaar/PAN" button shows in
+  registration. **Do not use this with real worker data you care about** — it's a test mode.
+- **`production`**: worker OTPs are only delivered, never returned. That means
+  **no worker can log in** until at least one of these is configured:
+  - `WATI_API_URL` + `WATI_API_TOKEN` + `WATI_OTP_TEMPLATE` (WhatsApp)
     and/or `SMS_WEBHOOK_URL` (SMS fallback)
-  - HR/admin: `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM`
-  Only emails in `ADMIN_BOOTSTRAP_EMAILS` or pre-created in Users can sign in.
 
 ## Pointing the app at it
 

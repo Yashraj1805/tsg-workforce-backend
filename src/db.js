@@ -199,6 +199,11 @@ addColumnIfMissing('workers', 'bank_passbook_data_url', 'TEXT');
 // BRD §11 screen 9 (grey = off day) and screen 10 (missed punch "calls site HR").
 addColumnIfMissing('locations', 'weekly_off', 'INTEGER'); // 0 = Sunday … 6 = Saturday; NULL = no weekly off
 addColumnIfMissing('hr_users', 'phone', 'TEXT');
+// Password login for the admin portal (replaces email OTP): scrypt hash, and a flag set
+// whenever a System Admin sets/resets it so the user is made to choose their own.
+addColumnIfMissing('hr_users', 'password_hash', 'TEXT');
+addColumnIfMissing('hr_users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
+addColumnIfMissing('hr_users', 'password_changed_at', 'INTEGER');
 if (!db.prepare('SELECT 1 FROM jobs LIMIT 1').get()) {
   // BRD §4 scope list; System Admin can rename/add/retire these.
   const seed = [['Washing staff', 'धुलाई कर्मचारी', '🚿'], ['Driver', 'ड्राइवर', '🚗'], ['Security guard', 'सुरक्षा गार्ड', '🛡️'],
