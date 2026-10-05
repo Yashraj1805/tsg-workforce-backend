@@ -27,7 +27,21 @@ function parseDataUrl(dataUrl) {
   return { mimeType: m[1], data: m[2] };
 }
 
+// Gemini intermittently answers 503 "model is currently experiencing high load" or
+// just stalls past the timeout (seen live, twice in 20s, on a 7-image duplicate-face
+// check). Those clear within seconds, so one retry after a short pause turns most of
+// them into a normal answer instead of an "HR please review" flag. Real failures
+// (bad key, 4xx) are not retried.
+const RETRYABLE = /high load|overloaded|timed out|503|429|RESOURCE_EXHAUSTED|UNAVAILABLE/i;
 async function callGemini(promptText, images, schema, timeoutMs) {
+  const first = await callGeminiOnce(promptText, images, schema, timeoutMs);
+  if (first.ok || first.skipped || !RETRYABLE.test(first.error || '')) return first;
+  await new Promise(r => setTimeout(r, 2500));
+  const second = await callGeminiOnce(promptText, images, schema, timeoutMs);
+  return second.ok ? second : { ...second, error: `${second.error} (after retry)` };
+}
+
+async function callGeminiOnce(promptText, images, schema, timeoutMs) {
   if (!isConfigured()) return { ok: false, skipped: true, error: 'GEMINI_API_KEY not configured' };
 
   const body = {
@@ -145,7 +159,7 @@ async function findMatchingFace(probeDataUrl, candidateDataUrls) {
       },
       required: ['matchIndex', 'confidence', 'reason'],
     },
-    20000
+    30000 // 7 images per call; under load this one genuinely needs longer than the single-image checks
   );
 }
 
