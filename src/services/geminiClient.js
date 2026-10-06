@@ -60,9 +60,10 @@ async function callGeminiOnce(promptText, images, schema, timeoutMs) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs || 12000);
   try {
-    const res = await fetch(`${ENDPOINT}?key=${process.env.GEMINI_API_KEY}`, {
+    // Key goes in a header, never the URL — URLs end up in proxy and access logs.
+    const res = await fetch(ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
       body: JSON.stringify(body),
       signal: controller.signal,
     });

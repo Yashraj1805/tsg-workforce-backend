@@ -73,8 +73,11 @@ function requireKiosk(req, res, next) {
   if (payload.role !== 'kiosk') return res.status(403).json({ error: 'Gate tablet only' });
   const kiosk = db.prepare('SELECT * FROM kiosks WHERE id = ?').get(payload.sub);
   if (!kiosk || kiosk.status !== 'active') return res.status(401).json({ error: 'This gate tablet has been retired — pair it again' });
+  // The header is mandatory: a stolen kiosk token must not work from a device that simply
+  // leaves it out.
   const deviceId = req.headers['x-device-id'];
-  if (kiosk.device_id && deviceId && kiosk.device_id !== deviceId) return res.status(403).json({ error: 'This tablet is not the one paired for this gate' });
+  if (!deviceId) return res.status(400).json({ error: 'X-Device-Id header is required' });
+  if (kiosk.device_id && kiosk.device_id !== deviceId) return res.status(403).json({ error: 'This tablet is not the one paired for this gate' });
   req.auth = payload;
   req.kiosk = kiosk;
   next();

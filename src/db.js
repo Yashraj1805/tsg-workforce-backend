@@ -12,6 +12,8 @@ const DB_PATH = path.join(DATA_DIR, 'tsg_workforce.sqlite');
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
+db.exec('PRAGMA busy_timeout = 5000;');   // a deploy overlap or a maintenance shell must wait, not 500
+db.exec('PRAGMA synchronous = NORMAL;');  // safe with WAL; FULL only slows every punch down
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS vendors (
@@ -179,10 +181,23 @@ addColumnIfMissing('punches', 'risk_reasons', 'TEXT');
 // approval, never auto-rejects a worker on its own (heuristic, not a forensic tool).
 addColumnIfMissing('workers', 'pan_tamper_note', 'TEXT');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS punches_client_id ON punches(client_id) WHERE client_id IS NOT NULL');
+// Every punch check, register, dashboard and report reads punches by worker and/or time;
+// without these each one was a full scan of a table whose rows carry selfies.
+db.exec('CREATE INDEX IF NOT EXISTS punches_worker_ts ON punches(worker_id, ts)');
+db.exec('CREATE INDEX IF NOT EXISTS punches_ts ON punches(ts)');
+db.exec('CREATE INDEX IF NOT EXISTS punches_result_ts ON punches(result, ts)');
+db.exec('CREATE INDEX IF NOT EXISTS workers_location_status ON workers(location_id, status)');
+db.exec('CREATE INDEX IF NOT EXISTS workers_vendor_status ON workers(vendor_id, status)');
+// 192 px thumbnails (services/thumbs.js) so list screens never download full photos.
+// 'none' marks a row whose image can't be thumbnailed (PNG/corrupt) so it isn't retried.
+addColumnIfMissing('punches', 'selfie_thumb', 'TEXT');
+addColumnIfMissing('workers', 'photo_thumb', 'TEXT');
+addColumnIfMissing('workers', 'reject_reason', 'TEXT');
 db.exec('CREATE TABLE IF NOT EXISTS vendor_invoices (id TEXT PRIMARY KEY, vendor_id TEXT NOT NULL REFERENCES vendors(id), month TEXT NOT NULL, invoice_days REAL NOT NULL, invoice_ref TEXT, amount REAL, entered_by TEXT NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (vendor_id, month))');
 db.exec('CREATE TABLE IF NOT EXISTS attendance_locks (month TEXT PRIMARY KEY, locked_by TEXT NOT NULL, locked_at INTEGER NOT NULL)');
 // R17/R18: server-side login sessions (logout + admin 15-minute idle timeout).
 db.exec('CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id TEXT NOT NULL, identifier TEXT, created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, ended_at INTEGER, end_reason TEXT)');
+db.exec('CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id, ended_at)');
 addColumnIfMissing('workers', 'registered_by', 'TEXT'); // Site HR email when registered on HR's phone (assisted)
 
 // BRD §10 registration screens: job list set by admin (screen 8), consent saved with

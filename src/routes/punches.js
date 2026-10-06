@@ -7,6 +7,16 @@ const { haversineMeters } = require('../services/geo');
 const gemini = require('../services/geminiClient');
 const { sqlDay } = require('../services/time');
 const { alertBlockedPunch } = require('../services/alerts');
+const { checkImages } = require('../services/images');
+const { makeThumb } = require('../services/thumbs');
+
+// Thumbnail for list screens, written after the response so a punch never waits on it.
+function attachThumb(punchId, selfieDataUrl) {
+  makeThumb(selfieDataUrl).then(t => { if (t) db.prepare('UPDATE punches SET selfie_thumb = ? WHERE id = ?').run(t, punchId); }).catch(() => {});
+}
+// What a list row carries instead of the full selfie.
+const PUNCH_LIST_COLS = 'id, worker_id, type, ts, lat, lng, accuracy, distance_m, result, reason, device_id, face_match_note, vendor_id, location_id, offline, risk_score, risk_reasons, client_id, created_at';
+const IMAGE_SPEC = { selfieDataUrl: 'selfie', livenessFrameDataUrl: 'frame' };
 
 const router = express.Router();
 
@@ -23,7 +33,7 @@ const TELEPORT_MAX_ACCURACY_M = 100; // fixes vaguer than this aren't used for t
 // "borderline on several signals at once" for HR to glance at on the Exceptions screen,
 // without needing to read every face-match note by hand. No extra Gemini call — built
 // entirely from signals evaluatePunch already gathered deciding whether to allow it.
-function computeRiskScore({ accuracy, accuracyLimit, distanceM, radius, faceBorderline, integritySuspicious, offline, livenessBorderline }) {
+function computeRiskScore({ accuracy, accuracyLimit, distanceM, radius, faceBorderline, integritySuspicious, offline, offlineDelayMin, livenessBorderline }) {
   let score = 0;
   const reasons = [];
   if (accuracy != null && accuracy > accuracyLimit * 0.7) { score += 15; reasons.push('GPS accuracy close to the limit'); }
@@ -31,6 +41,10 @@ function computeRiskScore({ accuracy, accuracyLimit, distanceM, radius, faceBord
   if (faceBorderline) { score += 35; reasons.push('face-match was borderline'); }
   if (integritySuspicious) { score += 30; reasons.push('same coordinates as another day'); }
   if (offline) { score += 10; reasons.push('offline punch'); }
+  // The claimed capture time of an offline punch comes from the phone. A punch uploaded
+  // long after it was supposedly taken is exactly the back-dating case, so it is
+  // surfaced to HR rather than silently billed.
+  if (offlineDelayMin > 15) { score += 25; reasons.push(`offline punch uploaded ${Math.round(offlineDelayMin)} min after its claimed time`); }
   if (livenessBorderline) { score += 25; reasons.push('liveness check was borderline'); }
   return { score: Math.min(100, score), reasons };
 }
@@ -41,7 +55,7 @@ function computeRiskScore({ accuracy, accuracyLimit, distanceM, radius, faceBord
 // (R19), which passes the reconstructed original time as `ts`.
 // Returns { ok: true, punch } or { ok: false, status, body }.
 async function evaluatePunch(w, input, ts, opts = {}) {
-  const { type, lat, lng, accuracy, selfieDataUrl, deviceId, integrity, livenessFrameDataUrl } = input;
+  const { type, selfieDataUrl, deviceId, integrity, livenessFrameDataUrl } = input;
   const block = (reason, status, error, note, distanceM) => {
     const punchId = logBlocked(w, type, lat, lng, accuracy, distanceM == null ? null : distanceM, selfieDataUrl, deviceId, reason, note, ts, opts.offline);
     return { ok: false, status, body: { error, blocked: true, reason, distanceM, accuracy }, punchId };
@@ -54,16 +68,23 @@ async function evaluatePunch(w, input, ts, opts = {}) {
 
   const loc = db.prepare('SELECT * FROM locations WHERE id = ?').get(w.location_id);
   if (!loc) return { ok: false, status: 400, body: { error: 'Worker has no assigned location — ask HR to fix this in the worker record' } };
-  const distanceM = Math.round(haversineMeters(lat, lng, loc.lat, loc.lng));
+  // A paired gate tablet is bound to its site and never moves, so its position is the
+  // site's; it sends no GPS, and the phone-only checks below (fake GPS, teleport, same
+  // spot, accuracy, geofence) don't apply to it. Running them on a fixed tablet flagged
+  // every gate punch as "same coordinates as another day" and e-mailed Security each time.
+  const atGate = !!opts.kiosk;
+  const { lat, lng } = atGate ? { lat: loc.lat, lng: loc.lng } : input;
+  const accuracy = atGate ? null : input.accuracy;
+  const distanceM = atGate ? 0 : Math.round(haversineMeters(lat, lng, loc.lat, loc.lng));
 
   // Fake GPS: the phone reports a mock-location fix → block.
-  if (integrity && (integrity.mock || integrity.legacyMockSetting)) {
+  if (!atGate && integrity && (integrity.mock || integrity.legacyMockSetting)) {
     return block('fake_gps', 422, 'A fake-location app is active on this phone — turn it off and punch again', `phone reported mock location (fixes checked: ${integrity.fixesChecked ?? '?'})`, distanceM);
   }
   // Fake GPS: impossible travel since this worker's previous punch attempt.
   // Only fixes that claim good accuracy are compared, and both accuracy radii are given
   // the benefit of the doubt — one wildly wrong network fix must not look like a teleport.
-  const prev = db.prepare('SELECT ts, lat, lng, accuracy FROM punches WHERE worker_id = ? AND lat IS NOT NULL AND ts < ? AND (accuracy IS NULL OR accuracy <= ?) ORDER BY ts DESC LIMIT 1').get(w.id, ts, TELEPORT_MAX_ACCURACY_M);
+  const prev = atGate ? null : db.prepare('SELECT ts, lat, lng, accuracy FROM punches WHERE worker_id = ? AND lat IS NOT NULL AND ts < ? AND (accuracy IS NULL OR accuracy <= ?) ORDER BY ts DESC LIMIT 1').get(w.id, ts, TELEPORT_MAX_ACCURACY_M);
   if (prev && ts - prev.ts < TELEPORT_WINDOW_MS && (accuracy == null || accuracy <= TELEPORT_MAX_ACCURACY_M)) {
     const moved = Math.max(0, haversineMeters(lat, lng, prev.lat, prev.lng) - (accuracy || 0) - (prev.accuracy || 0));
     const kmh = (moved / 1000) / Math.max((ts - prev.ts) / 3600000, 1 / 3600);
@@ -73,13 +94,13 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   }
   // Real GPS never returns exactly the same coordinates on different days; a spoofing
   // app often does. Not blocked on its own (could be a cached fix) — noted and alerted.
-  const sameSpot = db.prepare(`SELECT 1 FROM punches WHERE worker_id = ? AND lat = ? AND lng = ? AND ${sqlDay('ts')} != ${sqlDay('?')} LIMIT 1`).get(w.id, lat, lng, ts);
+  const sameSpot = atGate ? null : db.prepare(`SELECT 1 FROM punches WHERE worker_id = ? AND lat = ? AND lng = ? AND ${sqlDay('ts')} != ${sqlDay('?')} LIMIT 1`).get(w.id, lat, lng, ts);
   const integrityNote = sameSpot ? 'exact same coordinates as a punch on another day (possible fake GPS)' : null;
 
   if (accuracy != null && accuracy > loc.accuracy_limit) {
     return block('low_accuracy', 422, `GPS accuracy too low (${Math.round(accuracy)}m, limit ${loc.accuracy_limit}m) — move to an open area and try again`, null, distanceM);
   }
-  if (distanceM > loc.radius) {
+  if (!atGate && distanceM > loc.radius) {
     return block('outside_geofence', 422, `Outside the geofenced work location (${distanceM}m away, radius ${loc.radius}m)`, null, distanceM);
   }
 
@@ -182,7 +203,7 @@ async function evaluatePunch(w, input, ts, opts = {}) {
 
   const risk = computeRiskScore({
     accuracy, accuracyLimit: loc.accuracy_limit, distanceM, radius: loc.radius,
-    faceBorderline, integritySuspicious: !!integrityNote, offline: !!opts.offline, livenessBorderline,
+    faceBorderline, integritySuspicious: !!integrityNote, offline: !!opts.offline, offlineDelayMin: opts.offlineDelayMin, livenessBorderline,
   });
 
   // Bind the phone on first successful punch (R03).
@@ -194,15 +215,19 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   db.prepare(`INSERT INTO punches (id, worker_id, type, ts, lat, lng, accuracy, distance_m, selfie_data_url, result, reason, device_id, face_match_note, vendor_id, location_id, offline, risk_score, risk_reasons, created_at)
               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(id, w.id, type, ts, lat, lng, accuracy || null, distanceM, selfieDataUrl, 'ok', null, deviceId || null, faceMatchNote, w.vendor_id, w.location_id, opts.offline ? 1 : 0, risk.score, risk.reasons.join(', ') || null, Date.now());
-  addAudit(w.mobile, 'punch_' + type, `${type.toUpperCase()} at ${new Date(ts).toISOString()}${opts.offline ? ' (offline, synced later)' : ''}, ${distanceM}m from ${loc.name}`);
+  addAudit(w.mobile, 'punch_' + type, `${type.toUpperCase()} at ${new Date(ts).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })} IST${opts.offline ? ' (offline, synced later)' : ''}${atGate ? ` at gate tablet ${opts.kiosk.name}` : `, ${distanceM}m from ${loc.name}`}`);
+  attachThumb(id, selfieDataUrl);
   return { ok: true, punch: { id, type, ts, distanceM, accuracy, location: loc.name } };
 }
 
 router.post('/', requireAuth('worker'), async (req, res) => {
-  const { type, lat, lng, selfieDataUrl } = req.body || {};
+  const { type, lat, lng, selfieDataUrl, deviceId } = req.body || {};
   if (type !== 'in' && type !== 'out') return res.status(400).json({ error: 'type must be "in" or "out"' });
   if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng are required' });
   if (!selfieDataUrl) return res.status(400).json({ error: 'selfieDataUrl is required — live camera capture only (FR-K05/R09)' });
+  // R03 one phone per worker: a punch without a device id would skip the binding check.
+  if (!deviceId || typeof deviceId !== 'string') return res.status(400).json({ error: 'deviceId is required — update the app' });
+  const bad = checkImages(req.body, IMAGE_SPEC); if (bad) return res.status(bad.status).json({ error: bad.error });
   // BRD §7.8: "Punching is always done by the worker" — a Site HR assisted-registration
   // token (routes/assisted.js) must never punch, or bind HR's phone as the worker's.
   if (req.auth.assistedBy) return res.status(403).json({ error: 'Punching is always done by the worker on their own phone' });
@@ -231,7 +256,9 @@ router.post('/offline', requireAuth('worker'), async (req, res) => {
   if (!clientId || typeof clientId !== 'string') return res.status(400).json({ error: 'clientId is required' });
   if (b.type !== 'in' && b.type !== 'out') return res.status(400).json({ error: 'type must be "in" or "out"' });
   if (typeof b.lat !== 'number' || typeof b.lng !== 'number' || !b.selfieDataUrl) return res.status(400).json({ error: 'lat, lng and selfieDataUrl are required' });
+  if (!b.deviceId || typeof b.deviceId !== 'string') return res.status(400).json({ error: 'deviceId is required — update the app' });
   if (req.auth.assistedBy) return res.status(403).json({ error: 'Punching is always done by the worker on their own phone' });
+  const bad = checkImages(b, IMAGE_SPEC); if (bad) return res.status(bad.status).json({ error: bad.error });
 
   // Same upload again (retry after a dropped response): return what happened the first time.
   const seen = db.prepare('SELECT id, type, ts, result, reason FROM punches WHERE client_id = ? AND worker_id = ?').get(clientId, req.auth.sub);
@@ -252,7 +279,7 @@ router.post('/offline', requireAuth('worker'), async (req, res) => {
   if (w.status !== 'approved') return res.status(403).json({ error: `Cannot punch — registration status is "${w.status}", not approved (R07)` });
 
   const ts = Date.now() - sinceCapture;
-  const r = await evaluatePunch(w, b, ts, { offline: true });
+  const r = await evaluatePunch(w, b, ts, { offline: true, offlineDelayMin: sinceCapture / 60000 });
   const id = r.ok ? r.punch.id : r.punchId;
   if (id) db.prepare('UPDATE punches SET client_id = ? WHERE id = ?').run(clientId, id);
   if (!r.ok) return res.status(r.status).json(r.body);
@@ -268,12 +295,23 @@ function logBlocked(w, type, lat, lng, accuracy, distanceM, selfieDataUrl, devic
   addAudit(w.id, 'punch_blocked', `${type} blocked: ${reason}`);
   // BRD §11 screen 6: "Save the attempt and alert Security."
   alertBlockedPunch(w, reason, faceMatchNote);
+  attachThumb(id, selfieDataUrl);
   return id;
 }
 
+// The worker's own history never needs the selfies back (the phone took them); without
+// them 200 rows fit in the offline home cache instead of blowing the localStorage quota.
 router.get('/me', requireAuth('worker'), (req, res) => {
-  const rows = db.prepare('SELECT * FROM punches WHERE worker_id = ? ORDER BY ts DESC LIMIT 200').all(req.auth.sub);
+  const rows = db.prepare(`SELECT ${PUNCH_LIST_COLS} FROM punches WHERE worker_id = ? ORDER BY ts DESC LIMIT 200`).all(req.auth.sub);
   res.json(rows);
+});
+
+// One punch with its full selfie, for HR compare views (scoped like the list).
+router.get('/:id/selfie', requirePermission('punches.read'), (req, res) => {
+  const scope = workerIdScopeSql(req.user, 'punches.worker_id');
+  const p = db.prepare(`SELECT punches.id, punches.selfie_data_url FROM punches WHERE punches.id = ? AND ${scope.sql}`).get(req.params.id, ...scope.args);
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  res.json({ id: p.id, selfie_data_url: p.selfie_data_url });
 });
 
 // ---- HR: attendance register / exceptions ----
@@ -284,13 +322,21 @@ router.get('/', requirePermission('punches.read'), (req, res) => {
   const { workerId, date } = req.query;
   const result = PUNCH_RESULT_RESTRICTION[req.user.role] || req.query.result;
   const scope = workerIdScopeSql(req.user, 'punches.worker_id');
-  let sql = `SELECT punches.*, workers.name AS worker_name FROM punches LEFT JOIN workers ON workers.id = punches.worker_id WHERE ${scope.sql}`;
+  // Lists carry the 192 px thumbnail as selfie_data_url (full image only via ?full=1 for
+  // one worker's compare view, or /punches/:id/selfie) — a 500-row list was ~400 MB.
+  const full = req.query.full === '1' && workerId;
+  const selfieCol = full ? 'punches.selfie_data_url' : "CASE WHEN punches.selfie_thumb IS NULL OR punches.selfie_thumb = 'none' THEN punches.selfie_data_url ELSE punches.selfie_thumb END";
+  let sql = `SELECT ${PUNCH_LIST_COLS.split(', ').map(c => 'punches.' + c).join(', ')}, ${selfieCol} AS selfie_data_url, workers.name AS worker_name FROM punches LEFT JOIN workers ON workers.id = punches.worker_id WHERE ${scope.sql}`;
   const args = [...scope.args];
   if (workerId) { sql += ' AND punches.worker_id = ?'; args.push(workerId); }
   if (date) { sql += ` AND ${sqlDay('punches.ts')} = ?`; args.push(date); }
+  if (req.query.from) { sql += ' AND punches.ts >= ?'; args.push(Number(req.query.from)); }
+  if (req.query.to) { sql += ' AND punches.ts < ?'; args.push(Number(req.query.to)); }
   if (result) { sql += ' AND punches.result = ?'; args.push(result); }
   if (req.query.minRisk) { sql += ' AND punches.risk_score >= ?'; args.push(Number(req.query.minRisk)); }
-  sql += ' ORDER BY punches.ts DESC LIMIT 500';
+  // Blocked/risky lists for dashboards default to the last 14 days unless a filter narrows them.
+  if (!workerId && !date && !req.query.from && (result === 'blocked' || req.query.minRisk)) { sql += ' AND punches.ts >= ?'; args.push(Date.now() - 14 * 86400000); }
+  sql += ` ORDER BY punches.ts DESC LIMIT ${Math.min(Number(req.query.limit) || 500, 1000)}`;
   res.json(db.prepare(sql).all(...args));
 });
 

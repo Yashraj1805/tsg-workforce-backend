@@ -15,12 +15,13 @@ const { startSession } = require('../services/sessions');
 const { evaluatePunch } = require('./punches');
 const gemini = require('../services/geminiClient');
 const { sqlDay, today } = require('../services/time');
+const { checkImages } = require('../services/images');
 
 db.exec(`CREATE TABLE IF NOT EXISTS kiosks (id TEXT PRIMARY KEY, name TEXT NOT NULL, location_id TEXT NOT NULL REFERENCES locations(id),
   pairing_code TEXT, pairing_expires INTEGER, device_id TEXT, status TEXT NOT NULL DEFAULT 'active', created_by TEXT, created_at INTEGER NOT NULL, paired_at INTEGER)`);
 
 const router = express.Router();
-const PAIR_TTL_MS = 24 * 3600000;
+const PAIR_TTL_MS = 2 * 3600000; // 2 h: long enough for HR to walk to the gate, short enough that a leaked code is useless by evening
 
 // ---- Admin: set up gate tablets ----
 router.get('/kiosks', requirePermission('kiosks.manage'), (req, res) => {
@@ -36,7 +37,7 @@ router.post('/kiosks', requirePermission('kiosks.manage'), (req, res) => {
   db.prepare('INSERT INTO kiosks (id, name, location_id, pairing_code, pairing_expires, status, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)')
     .run(id, name.trim(), loc.id, code, Date.now() + PAIR_TTL_MS, 'active', req.user.email, Date.now());
   addAudit(req.user.email, 'add_kiosk', `${name.trim()} at ${loc.name}`);
-  res.status(201).json({ id, name: name.trim(), location: loc.name, pairingCode: code, pairingExpiresInHours: 24 });
+  res.status(201).json({ id, name: name.trim(), location: loc.name, pairingCode: code, pairingExpiresInHours: 2 });
 });
 router.post('/kiosks/:id/new-code', requirePermission('kiosks.manage'), (req, res) => {
   const k = db.prepare('SELECT * FROM kiosks WHERE id = ?').get(req.params.id);
@@ -45,7 +46,7 @@ router.post('/kiosks/:id/new-code', requirePermission('kiosks.manage'), (req, re
   // Re-pairing replaces the tablet: the old device stops working.
   db.prepare("UPDATE kiosks SET pairing_code = ?, pairing_expires = ?, device_id = NULL, status = 'active' WHERE id = ?").run(code, Date.now() + PAIR_TTL_MS, k.id);
   addAudit(req.user.email, 'kiosk_new_code', k.name);
-  res.json({ pairingCode: code, pairingExpiresInHours: 24 });
+  res.json({ pairingCode: code, pairingExpiresInHours: 2 });
 });
 router.put('/kiosks/:id', requirePermission('kiosks.manage'), (req, res) => {
   const k = db.prepare('SELECT * FROM kiosks WHERE id = ?').get(req.params.id);
@@ -60,8 +61,10 @@ router.put('/kiosks/:id', requirePermission('kiosks.manage'), (req, res) => {
 // ---- Tablet: pair once ----
 router.post('/kiosk/pair', (req, res) => {
   const { code, deviceId } = req.body || {};
+  // The id the tablet will send on every later request must be the one it pairs with.
+  if (!deviceId || typeof deviceId !== 'string' || req.headers['x-device-id'] !== deviceId) return res.status(400).json({ error: 'Device id missing — update the app' });
   const k = db.prepare("SELECT * FROM kiosks WHERE pairing_code = ? AND status = 'active'").get(String(code || ''));
-  if (!k || !deviceId || Date.now() > k.pairing_expires) return res.status(400).json({ error: 'Pairing code is wrong or expired — ask HR for a new one' });
+  if (!k || Date.now() > k.pairing_expires) { addAudit(req.ip || 'unknown', 'kiosk_pair_failed', `code ${String(code || '').replace(/\d(?=\d{2})/g, '*')}`); return res.status(400).json({ error: 'Pairing code is wrong or expired — ask HR for a new one' }); }
   db.prepare('UPDATE kiosks SET device_id = ?, pairing_code = NULL, paired_at = ? WHERE id = ?').run(deviceId, Date.now(), k.id);
   const sid = startSession('kiosk', k.id, `kiosk:${k.name}`, `Gate tablet "${k.name}" paired`);
   const token = issueToken({ sub: k.id, role: 'kiosk', sid }, '365d');
@@ -75,6 +78,7 @@ router.post('/kiosk/pair', (req, res) => {
 router.post('/kiosk/face-detect', requireKiosk, async (req, res) => {
   const { frameDataUrl } = req.body || {};
   if (!frameDataUrl) return res.status(400).json({ error: 'frameDataUrl is required' });
+  const bad = checkImages(req.body, { frameDataUrl: 'frame' }); if (bad) return res.status(bad.status).json({ error: bad.error });
   if (!gemini.isConfigured()) return res.status(503).json({ error: 'Gemini not configured — auto-scan unavailable' });
   const result = await gemini.detectFace(frameDataUrl);
   if (!result.ok) return res.status(502).json({ error: result.error });
@@ -94,13 +98,15 @@ router.get('/kiosk/candidates', requireKiosk, (req, res) => {
   const rows = db.prepare("SELECT id, name, photo_data_url FROM workers WHERE status = 'approved' AND location_id = ? AND mobile LIKE ?").all(req.kiosk.location_id, '%' + last4);
   res.json(rows.map(r => {
     const done = db.prepare(`SELECT type FROM punches WHERE worker_id = ? AND result = 'ok' AND ${sqlDay('ts')} = ?`).all(r.id, today()).map(p => p.type);
-    return { id: r.id, firstName: (r.name || '').split(/\s+/)[0], photo: r.photo_data_url, next: done.includes('out') ? 'done' : done.includes('in') ? 'out' : 'in' };
+    return { id: r.id, firstName: (r.name || '').split(/\s+/)[0], photo: (r.photo_thumb && r.photo_thumb !== 'none') ? r.photo_thumb : r.photo_data_url, next: done.includes('out') ? 'done' : done.includes('in') ? 'out' : 'in' };
   }));
 });
 
 router.post('/kiosk/punch', requireKiosk, async (req, res) => {
   const b = req.body || {};
-  if (typeof b.lat !== 'number' || typeof b.lng !== 'number' || !b.selfieDataUrl || !b.workerId) return res.status(400).json({ error: 'workerId, lat, lng and selfieDataUrl are required' });
+  // No lat/lng: the tablet is bound to its site (evaluatePunch uses the site's position).
+  if (!b.selfieDataUrl || !b.workerId) return res.status(400).json({ error: 'workerId and selfieDataUrl are required' });
+  const bad = checkImages(b, { selfieDataUrl: 'selfie', livenessFrameDataUrl: 'frame' }); if (bad) return res.status(bad.status).json({ error: bad.error });
   const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(b.workerId);
   if (!w || w.status !== 'approved') return res.status(404).json({ error: 'Worker not found or not approved' });
   if (w.location_id !== req.kiosk.location_id) return res.status(403).json({ error: 'This gate tablet is for another site' });

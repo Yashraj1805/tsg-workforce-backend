@@ -7,6 +7,17 @@ const gemini = require('../services/geminiClient');
 const { parseAadhaarQr, aadhaarKey, careOfName } = require('../services/aadhaarQr');
 const { namesMatch } = require('../services/nameMatch');
 const { checkDocument } = require('../services/identityChecks');
+const { checkImages } = require('../services/images');
+
+// DPDP: no identity document is read or sent to a verification provider before the
+// worker has accepted the consent text (wizard step 1). Any accepted version counts
+// here; the exact current version is enforced at submit (routes/workers.js).
+function requireConsent(req, res, next) {
+  const w = db.prepare('SELECT consent_version FROM workers WHERE id = ?').get(req.auth.sub);
+  if (!w) return res.status(404).json({ error: 'Worker not found' });
+  if (!w.consent_version) return res.status(400).json({ error: 'Read and accept the consent first', consentRequired: true });
+  next();
+}
 const { decodeQrFromDataUrl } = require('../services/qrImage');
 
 const PAN_RE = /^[A-Z]{5}\d{4}[A-Z]$/;
@@ -28,6 +39,7 @@ const router = express.Router();
 router.post('/face-detect', requireAuth('worker'), async (req, res) => {
   const { frameDataUrl } = req.body || {};
   if (!frameDataUrl) return res.status(400).json({ error: 'frameDataUrl is required' });
+  const bad = checkImages(req.body, { frameDataUrl: 'frame' }); if (bad) return res.status(bad.status).json({ error: bad.error });
   if (!gemini.isConfigured()) return res.status(503).json({ error: 'Gemini not configured — auto-scan unavailable' });
   const result = await gemini.detectFace(frameDataUrl);
   if (!result.ok) return res.status(502).json({ error: result.error });
@@ -35,7 +47,7 @@ router.post('/face-detect', requireAuth('worker'), async (req, res) => {
 });
 
 // ---- Aadhaar via DigiLocker (BRD FR-K06 / R05) ----
-router.post('/digilocker/init', requireAuth('worker'), async (req, res) => {
+router.post('/digilocker/init', requireAuth('worker'), requireConsent, async (req, res) => {
   const { redirectUrl } = req.body || {};
   if (!redirectUrl) return res.status(400).json({ error: 'redirectUrl is required (where DigiLocker sends the worker back to)' });
   try {
@@ -92,17 +104,19 @@ router.get('/digilocker/:id/complete', requireAuth('worker'), async (req, res) =
 // so the worker doesn't have to type them. Not proof of identity on its own — the
 // DigiLocker step (Aadhaar OTP, through the API) is still what sets aadhaar_verified,
 // and it must match this card.
-router.post('/aadhaar-qr', requireAuth('worker'), (req, res) => {
+router.post('/aadhaar-qr', requireAuth('worker'), requireConsent, (req, res) => {
   const { qrText } = req.body || {};
   if (!qrText) return res.status(400).json({ error: 'qrText is required' });
+  if (typeof qrText !== 'string' || qrText.length > 12000) return res.status(400).json({ error: 'That is not an Aadhaar QR' });
   return acceptAadhaarQr(req, res, qrText);
 });
 
 // Fallback when the live scanner can't read the dense Secure QR (and ML Kit on the phone
 // couldn't read the photo either): decode the QR from a still photo here.
-router.post('/aadhaar-qr-image', requireAuth('worker'), (req, res) => {
+router.post('/aadhaar-qr-image', requireAuth('worker'), requireConsent, (req, res) => {
   const { photoDataUrl } = req.body || {};
   if (!photoDataUrl) return res.status(400).json({ error: 'photoDataUrl is required' });
+  const bad = checkImages(req.body, { photoDataUrl: 'document' }); if (bad) return res.status(bad.status).json({ error: bad.error });
   let text;
   try { text = decodeQrFromDataUrl(photoDataUrl); } catch (e) { return res.status(400).json({ error: e.message }); }
   if (!text) return res.status(422).json({ error: 'Could not read the QR in the photo — hold the phone closer so the QR fills most of the photo, in good light, without glare' });
@@ -140,9 +154,10 @@ function acceptAadhaarQr(req, res, qrText) {
 }
 
 // ---- PAN card photo, number read by OCR (BRD R04) ----
-router.post('/pan/photo', requireAuth('worker'), async (req, res) => {
+router.post('/pan/photo', requireAuth('worker'), requireConsent, async (req, res) => {
   const { photoDataUrl } = req.body || {};
   if (!photoDataUrl) return res.status(400).json({ error: 'photoDataUrl is required' });
+  const bad = checkImages(req.body, { photoDataUrl: 'document' }); if (bad) return res.status(bad.status).json({ error: bad.error });
   if (!gemini.isConfigured()) return res.status(503).json({ error: 'PAN reading is not available (GEMINI_API_KEY not set) — enter the PAN number instead', manualEntry: true });
   const r = await gemini.readPanCard(photoDataUrl);
   if (!r.ok) return res.status(502).json({ error: `Could not read the PAN card: ${r.error}`, manualEntry: true });
@@ -159,7 +174,7 @@ router.post('/pan/photo', requireAuth('worker'), async (req, res) => {
 // ---- PAN (BRD FR-K07 / R05) ----
 // Verifies the number read from the PAN photo; a typed `pan` is only the fallback for
 // when the photo can't be read (no Gemini key / OCR failure).
-router.post('/pan/verify', requireAuth('worker'), async (req, res) => {
+router.post('/pan/verify', requireAuth('worker'), requireConsent, async (req, res) => {
   const me = db.prepare('SELECT pan_ocr_number FROM workers WHERE id = ?').get(req.auth.sub);
   const pan = ((req.body || {}).pan || me.pan_ocr_number || '').toUpperCase();
   if (!PAN_RE.test(pan)) return res.status(400).json({ error: 'Take a photo of the PAN card first (or enter a valid PAN, e.g. ABCDE1234F)' });
@@ -201,6 +216,7 @@ const setuConfigured = setu.isConfigured;
 // verification is required and this always returns 403. Remove this route entirely
 // before any real deployment; it should never ship reachable in production. ----
 router.post('/skip-dev', requireAuth('worker'), (req, res) => {
+  if (process.env.NODE_ENV === 'production' || process.env.DEV_BYPASS !== '1') return res.status(404).json({ error: 'Not found' });
   if (setuConfigured()) {
     return res.status(403).json({ error: 'Setu credentials are configured — real Aadhaar/PAN verification is required now, skip is disabled.' });
   }

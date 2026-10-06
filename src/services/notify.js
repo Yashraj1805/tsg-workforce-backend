@@ -23,7 +23,12 @@ function smtp() {
 }
 
 async function sendSms(to, message) {
-  if (!process.env.SMS_WEBHOOK_URL) { console.log(`[SMS not sent — no SMS_WEBHOOK_URL] to ${to}: ${message}`); return { ok: false, skipped: true }; }
+  // The message text can carry an OTP — never log it outside an explicit dev bypass.
+  if (!process.env.SMS_WEBHOOK_URL) {
+    const devEcho = process.env.NODE_ENV !== 'production' && process.env.DEV_BYPASS === '1';
+    console.log(`[SMS not sent — no SMS_WEBHOOK_URL] to ${String(to).replace(/.(?=.{4})/g, 'x')}${devEcho ? `: ${message}` : ''}`);
+    return { ok: false, skipped: true };
+  }
   try {
     const r = await fetch(process.env.SMS_WEBHOOK_URL, {
       method: 'POST',
@@ -111,7 +116,10 @@ async function sendOtp(identifier, purpose, code, preferred) {
     const e = await sendEmail(identifier, 'TSG Workforce login OTP', msg);
     if (e.ok) channel = 'email';
   }
-  if (channel === 'none') console.log(`[OTP] ${purpose} OTP for ${identifier}: ${code} (no delivery channel configured)`);
+  if (channel === 'none') {
+    const devEcho = process.env.NODE_ENV !== 'production' && process.env.DEV_BYPASS === '1';
+    console.log(`[OTP] no delivery channel configured for ${purpose} to ${String(identifier).replace(/.(?=.{4})/g, 'x')}${devEcho ? ` (dev code ${code})` : ''}`);
+  }
   return { channel };
 }
 

@@ -27,10 +27,13 @@ function bigDecimalToBytes(decimal) {
   return Buffer.from(hex, 'hex');
 }
 
+// A real Secure QR inflates to a few KB; the cap stops a crafted payload inflating into
+// hundreds of MB on the server.
+const INFLATE_OPTS = { maxOutputLength: 256 * 1024 };
 function decompress(bytes) {
-  try { return zlib.gunzipSync(bytes); } catch (e) { /* some encoders emit raw zlib */ }
-  try { return zlib.inflateSync(bytes); } catch (e) { /* fall through */ }
-  return zlib.inflateRawSync(bytes);
+  try { return zlib.gunzipSync(bytes, INFLATE_OPTS); } catch (e) { /* some encoders emit raw zlib */ }
+  try { return zlib.inflateSync(bytes, INFLATE_OPTS); } catch (e) { /* fall through */ }
+  return zlib.inflateRawSync(bytes, INFLATE_OPTS);
 }
 
 let cachedCert;

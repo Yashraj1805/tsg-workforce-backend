@@ -27,7 +27,7 @@ function downscale(img, maxDim) {
 function decodeQrFromDataUrl(dataUrl) {
   const m = /^data:image\/jpe?g;base64,(.+)$/.exec(dataUrl || '');
   if (!m) throw new Error('Expected a JPEG photo');
-  const raw = jpeg.decode(Buffer.from(m[1], 'base64'), { useTArray: true, maxMemoryUsageInMB: 512, maxResolutionInMP: 50 });
+  const raw = jpeg.decode(Buffer.from(m[1], 'base64'), { useTArray: true, maxMemoryUsageInMB: 160, maxResolutionInMP: 20 });
   const full = { width: raw.width, height: raw.height, data: new Uint8ClampedArray(raw.data.buffer, raw.data.byteOffset, raw.data.byteLength) };
   for (const size of [1600, 2400, 1200, 900, Math.max(full.width, full.height)]) {
     const img = downscale(full, size);

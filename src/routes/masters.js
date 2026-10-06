@@ -8,6 +8,8 @@ const { parseAadhaarQr, aadhaarKey, careOfName } = require('../services/aadhaarQ
 const { decodeQrFromDataUrl } = require('../services/qrImage');
 const { namesMatch } = require('../services/nameMatch');
 const { checkDocument } = require('../services/identityChecks');
+const { can } = require('../rbac');
+const { checkImages } = require('../services/images');
 
 const router = express.Router();
 const PAN_RE = /^[A-Z]{5}\d{4}[A-Z]$/;
@@ -16,7 +18,11 @@ const PAN_RE = /^[A-Z]{5}\d{4}[A-Z]$/;
 // GET is readable by any authenticated role — a worker needs the vendor/location
 // list during registration to pick from; only mutations are HR-only.
 router.get('/vendors', requireAuth(), (req, res) => {
-  res.json(db.prepare('SELECT * FROM vendors ORDER BY created_at DESC').all());
+  const rows = db.prepare('SELECT * FROM vendors ORDER BY created_at DESC').all();
+  // The contact person's PAN/Aadhaar details are for the System Admin who verifies them —
+  // a worker picking their agency, or a Site HR, gets the business fields only.
+  if (req.user && can(req.user.role, 'masters.write')) return res.json(rows);
+  res.json(rows.map(v => { const o = { ...v }; for (const c of VENDOR_KYC_COLS) delete o[c]; o.contact_kyc_done = !!(v.contact_pan_verified && v.contact_aadhaar_verified); return o; }));
 });
 
 // R01: "Vendor list: name, GSTIN, contact, contract dates". Validates what's given and
@@ -109,6 +115,7 @@ router.put('/vendors/:id', requirePermission('masters.write'), (req, res) => {
 router.post('/vendor-kyc/pan-photo', requirePermission('masters.write'), async (req, res) => {
   const { photoDataUrl } = req.body || {};
   if (!photoDataUrl) return res.status(400).json({ error: 'photoDataUrl is required' });
+  const bad = checkImages(req.body, { photoDataUrl: 'document' }); if (bad) return res.status(bad.status).json({ error: bad.error });
   if (!gemini.isConfigured()) return res.status(503).json({ error: 'PAN reading is not available (GEMINI_API_KEY not set) — enter the PAN number instead', manualEntry: true });
   const r = await gemini.readPanCard(photoDataUrl);
   if (!r.ok) return res.status(502).json({ error: `Could not read the PAN card: ${r.error}`, manualEntry: true });
@@ -122,11 +129,13 @@ router.post('/vendor-kyc/pan-photo', requirePermission('masters.write'), async (
 router.post('/vendor-kyc/aadhaar-qr', requirePermission('masters.write'), (req, res) => {
   const { qrText } = req.body || {};
   if (!qrText) return res.status(400).json({ error: 'qrText is required' });
+  if (typeof qrText !== 'string' || qrText.length > 12000) return res.status(400).json({ error: 'That is not an Aadhaar QR' });
   return acceptVendorAadhaarQr(req, res, qrText);
 });
 router.post('/vendor-kyc/aadhaar-qr-image', requirePermission('masters.write'), (req, res) => {
   const { photoDataUrl } = req.body || {};
   if (!photoDataUrl) return res.status(400).json({ error: 'photoDataUrl is required' });
+  const bad = checkImages(req.body, { photoDataUrl: 'document' }); if (bad) return res.status(bad.status).json({ error: bad.error });
   let text;
   try { text = decodeQrFromDataUrl(photoDataUrl); } catch (e) { return res.status(400).json({ error: e.message }); }
   if (!text) return res.status(422).json({ error: 'Could not read the QR in the photo — hold the phone closer so the QR fills most of the photo, in good light, without glare' });
@@ -221,7 +230,7 @@ router.get('/registration-options', requireAuth(), (req, res) => {
   // Setu creds) — so the wizard's "skip KYC" button never renders where it would fail,
   // and above all never renders in production.
   res.json({ jobs: db.prepare('SELECT * FROM jobs WHERE active = 1 ORDER BY sort, name').all(), education: EDUCATION, experience: EXPERIENCE, consent: CONSENT,
-    devSkipAllowed: process.env.NODE_ENV !== 'production' && !setu.isConfigured() });
+    devSkipAllowed: process.env.NODE_ENV !== 'production' && process.env.DEV_BYPASS === '1' && !setu.isConfigured() });
 });
 
 // ---- Locations (BRD R02) ----

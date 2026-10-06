@@ -40,7 +40,9 @@ router.post('/worker/otp/verify', (req, res) => {
   if (worker.blacklisted) { auditFailedLogin(mobile, 'worker', 'blacklisted'); return res.status(403).json({ error: 'This Aadhaar/mobile is blacklisted and cannot register again' }); }
 
   const sid = startSession('worker', worker.id, mobile, `Worker ${worker.name || '(new)'} signed in (status ${worker.status})`);
-  const token = issueToken({ sub: worker.id, role: 'worker', mobile, sid }, '12h');
+  // 30 days: a 12 h token expired mid-shift and killed the punch-out (and, with it, any
+  // offline punch waiting to sync). Revocation is server-side anyway (sessions table).
+  const token = issueToken({ sub: worker.id, role: 'worker', mobile, sid }, '30d');
   res.json({ token, worker, isNew });
 });
 

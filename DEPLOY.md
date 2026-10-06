@@ -24,6 +24,8 @@ break a deploy:
    | `GEMINI_MODEL` | `gemini-3.5-flash-lite` |
    | `ADMIN_BOOTSTRAP_EMAILS` | `harpreet@thesachdevgroup.com` |
    | `ADMIN_BOOTSTRAP_PASSWORD` | a temporary password for that account (changed at first login) |
+   | `DEV_BYPASS` | `1` only while testing without WATI/SMS (OTP shown in app). **Delete before real workers.** Ignored when `NODE_ENV=production`. |
+   | `S3_BUCKET` / `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | nightly encrypted backup copy to S3 (Mumbai). Without these, backups exist only on the Railway volume. |
    | `SETU_BASE_URL` | `https://dg-sandbox.setu.co` (until live Setu creds exist) |
    | `NODE_ENV` | see below |
 
@@ -39,10 +41,12 @@ HR/admin login is email + password on every server (no OTP, nothing auto-created
 the first System Admin comes from `ADMIN_BOOTSTRAP_EMAILS` + `ADMIN_BOOTSTRAP_PASSWORD`
 and creates everyone else from Users, each with a temporary password they must change.
 
-- **`development`** (what to use for live testing right now): **worker** OTPs are
-  returned in the API response and shown on the login screen, so workers can log in
-  without SMS/WhatsApp being set up. The dev "skip Aadhaar/PAN" button shows in
-  registration. **Do not use this with real worker data you care about** — it's a test mode.
+- **`development` + `DEV_BYPASS=1`** (what to use for live testing right now): **worker**
+  OTPs are returned in the API response and shown on the login screen, so workers can log
+  in without SMS/WhatsApp being set up. The dev "skip Aadhaar/PAN" button shows in
+  registration. **Do not use this with real worker data you care about** — anyone who
+  knows a worker's mobile number can sign in as them. Without `DEV_BYPASS=1`, a
+  development server behaves like production for OTPs.
 - **`production`**: worker OTPs are only delivered, never returned. That means
   **no worker can log in** until at least one of these is configured:
   - `WATI_API_URL` + `WATI_API_TOKEN` + `WATI_OTP_TEMPLATE` (WhatsApp)

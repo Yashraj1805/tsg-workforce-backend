@@ -11,6 +11,28 @@ const { haversineMeters } = require('../services/geo');
 const { EDUCATION, EXPERIENCE, CONSENT } = require('../registrationOptions');
 const { notifyWorker } = require('../services/notify');
 const gemini = require('../services/geminiClient');
+const { can } = require('../rbac');
+const { checkImages } = require('../services/images');
+const { makeThumb } = require('../services/thumbs');
+
+// ---- What leaves the server about a worker, by who is asking (data minimisation).
+// Lists: the 192 px thumbnail stands in for the photo, identity-document images and the
+// Aadhaar key never go out, PAN is masked. Detail: full photo; the PAN card / passbook
+// images and full PAN only for roles that approve registrations (they review them).
+const KYC_IMAGE_COLS = ['pan_photo_data_url', 'bank_passbook_data_url'];
+const SECRET_COLS = ['aadhaar_qr_signature', 'aadhaar_key', 'device_id'];
+const maskPan = (p) => (p && /^[A-Z]{5}\d{4}[A-Z]$/i.test(p)) ? p.slice(0, 2) + 'XXX' + 'XXXX' + p.slice(-1) : p ? 'XXXXXXXXXX' : p;
+function publicWorker(w, user, { detail = false } = {}) {
+  if (!w) return w;
+  const o = { ...w };
+  const approver = user && can(user.role, 'workers.approve');
+  for (const c of SECRET_COLS) delete o[c];
+  if (!detail) { o.photo_data_url = (w.photo_thumb && w.photo_thumb !== 'none') ? w.photo_thumb : w.photo_data_url; for (const c of KYC_IMAGE_COLS) delete o[c]; }
+  else if (!approver) for (const c of KYC_IMAGE_COLS) delete o[c];
+  delete o.photo_thumb;
+  if (!approver) o.pan_number = maskPan(o.pan_number);
+  return o;
+}
 
 const router = express.Router();
 
@@ -77,10 +99,13 @@ router.put('/me', requireAuth('worker'), async (req, res) => {
   // Screen 5: "Live check, one face only." A photo of a photo/screen, no face, or a group
   // photo is refused; if the check can't run (no Gemini key / outage) the photo is kept
   // and the note tells HR it wasn't checked.
+  const badImg = checkImages(body, { photoDataUrl: 'photo', bankPassbookDataUrl: 'document' });
+  if (badImg) return res.status(badImg.status).json({ error: badImg.error });
   if (updates.includes('photo_data_url') && body.photoDataUrl) {
     const check = await checkRegistrationPhoto(body.photoDataUrl);
     if (!check.ok) return res.status(422).json({ error: check.error, photoCheck: true });
     extra.photo_check_note = check.note;
+    extra.photo_thumb = (await makeThumb(body.photoDataUrl)) || 'none';
   }
 
   const cols = [...updates, ...Object.keys(extra)];
@@ -211,7 +236,7 @@ router.get('/', requirePermission('workers.read'), (req, res) => {
     LEFT JOIN vendors v ON v.id = workers.vendor_id LEFT JOIN locations l ON l.id = workers.location_id WHERE ${scope.sql}`;
   const args = [...scope.args];
   if (status) { sql += ' AND workers.status = ?'; args.push(status); }
-  res.json(db.prepare(sql + ' ORDER BY workers.created_at DESC').all(...args));
+  res.json(db.prepare(sql + ' ORDER BY workers.created_at DESC').all(...args).map(w => publicWorker(w, req.user)));
 });
 
 // Out-of-scope workers 404 rather than 403, so the response doesn't confirm they exist.
@@ -225,7 +250,7 @@ router.get('/:id', requirePermission('workers.read'), (req, res) => {
   if (!w) return res.status(404).json({ error: 'Not found' });
   const location = w.location_id ? db.prepare('SELECT id, name, brand, lat, lng, radius, accuracy_limit FROM locations WHERE id = ?').get(w.location_id) : null;
   const vendor = w.vendor_id ? db.prepare('SELECT id, name, phone FROM vendors WHERE id = ?').get(w.vendor_id) : null;
-  res.json({ ...w, location, vendor });
+  res.json({ ...publicWorker(w, req.user, { detail: true }), location, vendor });
 });
 
 // AI absenteeism-risk read (on demand, not computed automatically for every worker —
@@ -328,8 +353,12 @@ router.post('/:id/send-back', requirePermission('workers.approve'), (req, res) =
 router.post('/:id/reject', requirePermission('workers.approve'), (req, res) => {
   const w = getScopedWorker(req.user, req.params.id);
   if (!w) return res.status(404).json({ error: 'Not found' });
-  db.prepare("UPDATE workers SET status = 'rejected' WHERE id = ?").run(w.id);
-  addAudit(req.auth.email, 'reject_registration', `Rejected ${w.name}`);
+  // A rejection the worker never hears about means they keep turning up at the gate.
+  const reason = String((req.body || {}).reason || '').trim();
+  if (reason.length < 3) return res.status(400).json({ error: 'Give the reason for rejecting — the worker is told this' });
+  db.prepare("UPDATE workers SET status = 'rejected', reject_reason = ? WHERE id = ?").run(reason.slice(0, 300), w.id);
+  addAudit(req.auth.email, 'reject_registration', `Rejected ${w.name}: ${reason}`);
+  notifyWorker(w, `TSG Workforce: your registration was not approved. Reason: ${reason}. Contact your Site HR for help.`);
   res.json(getWorker(w.id));
 });
 

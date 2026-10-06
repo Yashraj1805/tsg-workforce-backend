@@ -13,7 +13,10 @@ const OTP_TTL_MS = 5 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
 const RESEND_AFTER_MS = 30 * 1000;
 const LOCK_MS = 15 * 60 * 1000;
-const isDev = process.env.NODE_ENV !== 'production';
+// OTPs are only ever echoed back / logged when DEV_BYPASS=1 is set explicitly AND the
+// server is not production — a development-mode server on a public URL must not hand
+// out every worker's OTP just because NODE_ENV wasn't flipped yet.
+const isDev = process.env.NODE_ENV !== 'production' && process.env.DEV_BYPASS === '1';
 
 db.exec('CREATE TABLE IF NOT EXISTS otp_locks (identifier TEXT NOT NULL, purpose TEXT NOT NULL, locked_until INTEGER NOT NULL, PRIMARY KEY (identifier, purpose))');
 const cols = db.prepare('PRAGMA table_info(otp_codes)').all().map(c => c.name);
@@ -46,7 +49,7 @@ async function generateOtp(identifier, purpose, opts = {}) {
 // the request — in dev the code is in the response anyway; in prod the worker retries.
 async function deliverOtp(identifier, purpose, code, preferred) {
   try { return (await require('./notify').sendOtp(identifier, purpose, code, preferred)).channel; }
-  catch (e) { console.log(`[OTP] ${purpose} OTP for ${identifier}: ${code} (delivery failed: ${e.message})`); return 'none'; }
+  catch (e) { console.log(`[OTP] ${purpose} OTP delivery failed for ${identifier.replace(/.(?=.{4})/g, 'x')}: ${e.message}${isDev ? ` (dev code ${code})` : ''}`); return 'none'; }
 }
 
 function verifyOtp(identifier, purpose, code) {
