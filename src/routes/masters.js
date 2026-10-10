@@ -59,7 +59,26 @@ function readVendor(body, existing) {
     contact_aadhaar_qr_format: pick('contactAadhaarQrFormat', 'contact_aadhaar_qr_format'),
     contact_aadhaar_qr_signature: pick('contactAadhaarQrSignature', 'contact_aadhaar_qr_signature'),
     contact_aadhaar_qr_at: body.contactAadhaarQrAt !== undefined ? body.contactAadhaarQrAt : (existing ? existing.contact_aadhaar_qr_at : null),
+    contact_aadhaar_verified: existing ? existing.contact_aadhaar_verified : 0, // server-only, like contact_pan_verified
+    contact_digilocker_request_id: existing ? existing.contact_digilocker_request_id : null,
   };
+  // DigiLocker (Meon) result for the contact person: the client only names the request
+  // it completed; the identity fields and both verified flags come from the stored
+  // provider result, never from the form.
+  const dlId = body.contactDigilockerRequestId;
+  if (dlId) {
+    const dl = db.prepare("SELECT * FROM vendor_digilocker_requests WHERE id = ? AND status = 'complete'").get(String(dlId));
+    if (!dl) return { error: 'That DigiLocker verification is not complete yet' };
+    const c = JSON.parse(dl.result_json || '{}');
+    v.contact_digilocker_request_id = dl.id;
+    v.contact_aadhaar_masked = c.aadhaarMasked || v.contact_aadhaar_masked;
+    v.contact_aadhaar_key = c.aadhaarKey || v.contact_aadhaar_key;
+    v.contact_aadhaar_name = c.aadhaarName || v.contact_aadhaar_name;
+    v.contact_aadhaar_qr_at = v.contact_aadhaar_qr_at || dl.completed_at;
+    v.contact_aadhaar_verified = 1;
+    if (c.panNumber) { v.contact_pan_number = c.panNumber; v.contact_pan_name = c.panName || v.contact_pan_name; v.contact_pan_verified = 1; }
+    else if (c.panName && !v.contact_pan_name) v.contact_pan_name = c.panName;
+  }
   if (v.gstin) v.gstin = v.gstin.toUpperCase();
   if (v.pan) v.pan = v.pan.toUpperCase();
   if (v.contact_pan_number) v.contact_pan_number = v.contact_pan_number.toUpperCase();
@@ -75,7 +94,7 @@ function readVendor(body, existing) {
 
 const VENDOR_KYC_COLS = ['contact_pan_photo_data_url', 'contact_pan_number', 'contact_pan_name', 'contact_pan_tamper_note',
   'contact_pan_verified', 'contact_aadhaar_masked', 'contact_aadhaar_key', 'contact_aadhaar_name',
-  'contact_aadhaar_qr_format', 'contact_aadhaar_qr_signature', 'contact_aadhaar_qr_at'];
+  'contact_aadhaar_qr_format', 'contact_aadhaar_qr_signature', 'contact_aadhaar_qr_at', 'contact_aadhaar_verified', 'contact_digilocker_request_id'];
 const VENDOR_COLS = ['name', 'gstin', 'pan', 'contact_person', 'phone', 'contract_start', 'contract_end', 'status', ...VENDOR_KYC_COLS];
 
 router.post('/vendors', requirePermission('masters.write'), (req, res) => {
@@ -112,6 +131,56 @@ router.put('/vendors/:id', requirePermission('masters.write'), (req, res) => {
 // not exist yet when HR is mid-way through the "Add vendor" form, so these just
 // read/verify a photo or QR and hand back the parsed result; the form includes it
 // in the vendor create/update payload above when HR saves. ----
+// DigiLocker for the contact person (same Meon flow as workers: Aadhaar + PAN in one
+// consent). HR starts it; the link is opened on the contact's phone (or shown to them);
+// then HR taps "fetch result". For an existing vendor the result is applied at once;
+// for a vendor still being created the form sends contactDigilockerRequestId on save.
+router.post('/vendor-kyc/digilocker/init', requirePermission('masters.write'), async (req, res) => {
+  const vendorId = (req.body || {}).vendorId || null;
+  if (vendorId && !db.prepare('SELECT 1 FROM vendors WHERE id = ?').get(vendorId)) return res.status(404).json({ error: 'Vendor not found' });
+  try {
+    const r = await setu.createDigilockerRequest(`${req.protocol}://${req.get('host')}/api/kyc/digilocker/return`, 'aadhaar,pan');
+    db.prepare('INSERT INTO vendor_digilocker_requests (id, hr_user_id, vendor_id, status, client_token, provider, created_at) VALUES (?,?,?,?,?,?,?)')
+      .run(r.id, req.user.id, vendorId, 'unauthenticated', r.clientToken || null, r.provider, Date.now());
+    addAudit(req.auth.email, 'vendor_digilocker_started', `${vendorId ? `vendor ${vendorId}` : 'new vendor'} contact KYC via ${r.provider}`);
+    res.json({ id: r.id, url: r.url, provider: r.provider });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+router.get('/vendor-kyc/digilocker/:id/complete', requirePermission('masters.write'), async (req, res) => {
+  const row = db.prepare('SELECT * FROM vendor_digilocker_requests WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Unknown DigiLocker request' });
+  try {
+    let contact;
+    if (row.status === 'complete' && row.result_json) contact = JSON.parse(row.result_json);
+    else {
+      const r = await setu.fetchDigilocker(row);
+      if (r.status !== 'complete') return res.status(409).json({ error: 'DigiLocker verification is not finished yet - the contact person must complete it first', pending: true });
+      const a = r.aadhaar, pan = r.pan;
+      contact = {
+        aadhaarMasked: a.maskedNumber, aadhaarKey: aadhaarKey(a.last4, a.dateOfBirth), aadhaarName: a.name, dob: a.dateOfBirth, gender: a.gender,
+        panNumber: pan && pan.number && !pan.masked && PAN_RE.test(pan.number) ? pan.number : null, panName: pan ? pan.name : null, panMasked: pan ? pan.number : null,
+      };
+      if (contact.panNumber && contact.aadhaarName && contact.panName && !namesMatch(contact.aadhaarName, contact.panName)) {
+        contact.nameMismatch = `PAN name "${contact.panName}" differs from Aadhaar name "${contact.aadhaarName}"`;
+      }
+      db.prepare("UPDATE vendor_digilocker_requests SET status = 'complete', result_json = ?, completed_at = ? WHERE id = ?").run(JSON.stringify(contact), Date.now(), row.id);
+      addAudit(req.auth.email, 'vendor_contact_kyc', `DigiLocker: Aadhaar ${contact.aadhaarMasked || '?'}${contact.panNumber ? `, PAN ${contact.panNumber.slice(0, 5)}XXXX${contact.panNumber.slice(-1)}` : ''}${contact.nameMismatch ? ` - ${contact.nameMismatch}` : ''}`);
+      const hit = contact.panNumber ? checkDocument('pan_number', contact.panNumber, '') : null;
+      if (hit) addAudit(req.auth.email, 'vendor_kyc_flag', `Vendor contact PAN ${hit.audit} (not blocked - vendor contact, not a worker registration)`);
+    }
+    let applied = false;
+    if (row.vendor_id) {
+      db.prepare(`UPDATE vendors SET contact_aadhaar_masked = ?, contact_aadhaar_key = ?, contact_aadhaar_name = ?, contact_aadhaar_qr_at = COALESCE(contact_aadhaar_qr_at, ?), contact_aadhaar_verified = 1,
+        contact_pan_number = COALESCE(?, contact_pan_number), contact_pan_name = COALESCE(?, contact_pan_name), contact_pan_verified = CASE WHEN ? IS NOT NULL THEN 1 ELSE contact_pan_verified END,
+        contact_digilocker_request_id = ? WHERE id = ?`)
+        .run(contact.aadhaarMasked, contact.aadhaarKey, contact.aadhaarName, Date.now(), contact.panNumber, contact.panName, contact.panNumber, row.id, row.vendor_id);
+      applied = true;
+    }
+    res.json({ id: row.id, contact, applied });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 router.post('/vendor-kyc/pan-photo', requirePermission('masters.write'), async (req, res) => {
   const { photoDataUrl } = req.body || {};
   if (!photoDataUrl) return res.status(400).json({ error: 'photoDataUrl is required' });

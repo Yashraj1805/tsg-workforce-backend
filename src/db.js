@@ -197,6 +197,13 @@ addColumnIfMissing('workers', 'reject_reason', 'TEXT');
 // fetch the result. provider = 'meon' | 'setu'.
 addColumnIfMissing('digilocker_requests', 'client_token', 'TEXT');
 addColumnIfMissing('digilocker_requests', 'provider', 'TEXT');
+// Vendor contact-person KYC through the same DigiLocker flow (HR starts it from the
+// Add/Edit vendor form; the contact completes consent on their own phone or HR's).
+db.exec(`CREATE TABLE IF NOT EXISTS vendor_digilocker_requests (
+  id TEXT PRIMARY KEY, hr_user_id TEXT NOT NULL, vendor_id TEXT, status TEXT NOT NULL, client_token TEXT, provider TEXT,
+  result_json TEXT, created_at INTEGER NOT NULL, completed_at INTEGER)`);
+addColumnIfMissing('vendors', 'contact_aadhaar_verified', 'INTEGER NOT NULL DEFAULT 0');
+addColumnIfMissing('vendors', 'contact_digilocker_request_id', 'TEXT');
 addColumnIfMissing('workers', 'aadhaar_photo_url', 'TEXT'); // DigiLocker-issued photo (URL on the provider), for HR face review
 db.exec('CREATE TABLE IF NOT EXISTS vendor_invoices (id TEXT PRIMARY KEY, vendor_id TEXT NOT NULL REFERENCES vendors(id), month TEXT NOT NULL, invoice_days REAL NOT NULL, invoice_ref TEXT, amount REAL, entered_by TEXT NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (vendor_id, month))');
 db.exec('CREATE TABLE IF NOT EXISTS attendance_locks (month TEXT PRIMARY KEY, locked_by TEXT NOT NULL, locked_at INTEGER NOT NULL)');
