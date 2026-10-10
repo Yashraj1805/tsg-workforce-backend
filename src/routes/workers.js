@@ -406,6 +406,30 @@ function performTransfer(w, user, { locationId, vendorId, reason }) {
   return { worker: getWorker(w.id) };
 }
 
+// Erase a worker record completely (DPDP erasure / wrong or test registration). Allowed
+// for anything not approved; an approved worker needs ?force=1 and a reason, and loses
+// their punches too — use exit for a real leaver. Every table that carries a worker_id
+// is cleared, so no photo/selfie/consent survives to match a future registration.
+router.delete('/:id', requirePermission('workers.manage'), (req, res) => {
+  const w = getScopedWorker(req.user, req.params.id);
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  const reason = String((req.body || {}).reason || req.query.reason || '').trim();
+  if (w.status === 'approved' && req.query.force !== '1') return res.status(400).json({ error: 'This worker is approved - use Exit instead, or delete with ?force=1 and a reason' });
+  if (w.status === 'approved' && reason.length < 3) return res.status(400).json({ error: 'A reason is required to delete an approved worker' });
+  if (w.blacklisted) return res.status(400).json({ error: 'A blacklisted worker is kept so they cannot register again' });
+  const tables = db.prepare("SELECT m.name FROM sqlite_master m WHERE m.type = 'table' AND m.name != 'workers' AND EXISTS (SELECT 1 FROM pragma_table_info(m.name) p WHERE p.name = 'worker_id')").all().map(r => r.name);
+  const removed = {};
+  db.exec('BEGIN');
+  try {
+    for (const t of tables) removed[t] = db.prepare(`DELETE FROM ${t} WHERE worker_id = ?`).run(w.id).changes;
+    removed.sessions = db.prepare("DELETE FROM sessions WHERE user_id = ? AND kind = 'worker'").run(w.id).changes;
+    db.prepare('DELETE FROM workers WHERE id = ?').run(w.id);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  addAudit(req.auth.email, 'delete_worker', `${w.name || '(no name)'} ${String(w.mobile || '').replace(/.(?=.{4})/g, 'x')} (${w.status}) erased${reason ? `: ${reason}` : ''}; rows: ${Object.entries(removed).filter(([, n]) => n).map(([t, n]) => `${t}=${n}`).join(', ') || 'none'}`);
+  res.json({ ok: true, removed });
+});
+
 router.post('/:id/exit', requirePermission('workers.manage'), (req, res) => {
   const body = req.body || {};
   const w = getScopedWorker(req.user, req.params.id);
