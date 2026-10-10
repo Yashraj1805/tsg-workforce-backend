@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
 const { requireAuth } = require('../middleware/auth');
-const setu = require('../services/setuClient');
+const setu = require('../services/kycProvider'); // Meon (live) or Setu, same interface
 const gemini = require('../services/geminiClient');
 const { parseAadhaarQr, aadhaarKey, careOfName } = require('../services/aadhaarQr');
 const { namesMatch } = require('../services/nameMatch');
@@ -47,14 +47,25 @@ router.post('/face-detect', requireAuth('worker'), async (req, res) => {
 });
 
 // ---- Aadhaar via DigiLocker (BRD FR-K06 / R05) ----
+// Where DigiLocker/Meon sends the worker after consent: a plain page on this server that
+// tells them to go back to the app (the app then calls /complete with the request id).
+router.get('/digilocker/return', (req, res) => {
+  res.type('html').send(`<!doctype html><html lang="hi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TSG Workforce</title>
+<style>body{font-family:system-ui,sans-serif;background:#f3f4fc;color:#15172e;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}
+.c{background:#fff;border-radius:20px;padding:28px 22px;max-width:420px;text-align:center;box-shadow:0 10px 30px rgba(23,27,80,.1)}.ok{font-size:56px;color:#19a974}.hi{font-size:22px;font-weight:800;margin:8px 0}.en{color:#666c9c}</style></head>
+<body><div class="c"><div class="ok">&#10003;</div><div class="hi">DigiLocker में सत्यापन पूरा हुआ</div><div class="en">Verification done in DigiLocker.</div>
+<p class="hi" style="font-size:17px">अब <b>TSG Workforce</b> ऐप पर वापस जाएँ और <b>"I've completed verification"</b> दबाएँ।</p><p class="en">Go back to the TSG Workforce app and tap "I've completed verification".</p></div></body></html>`);
+});
+
 router.post('/digilocker/init', requireAuth('worker'), requireConsent, async (req, res) => {
-  const { redirectUrl } = req.body || {};
-  if (!redirectUrl) return res.status(400).json({ error: 'redirectUrl is required (where DigiLocker sends the worker back to)' });
+  // The app may pass its own redirectUrl; by default the worker lands on /digilocker/return above.
+  const redirectUrl = (req.body || {}).redirectUrl || `${req.protocol}://${req.get('host')}/api/kyc/digilocker/return`;
   try {
-    const result = await setu.createDigilockerRequest(redirectUrl);
-    db.prepare('INSERT INTO digilocker_requests (id, worker_id, status, created_at) VALUES (?,?,?,?)')
-      .run(result.id, req.auth.sub, 'unauthenticated', Date.now());
-    res.json(result); // { id, status, url, validUpto } — app opens `url` for the worker to authenticate/consent
+    const result = await setu.createDigilockerRequest(redirectUrl, 'aadhaar,pan');
+    db.prepare('INSERT INTO digilocker_requests (id, worker_id, status, created_at, client_token, provider) VALUES (?,?,?,?,?,?)')
+      .run(result.id, req.auth.sub, 'unauthenticated', Date.now(), result.clientToken || null, result.provider);
+    addAudit(req.auth.mobile, 'digilocker_started', `DigiLocker request ${result.id.slice(0, 8)}… via ${result.provider}`);
+    res.json({ id: result.id, url: result.url, provider: result.provider }); // app opens `url` for the worker to authenticate/consent
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -64,8 +75,8 @@ router.get('/digilocker/:id/complete', requireAuth('worker'), async (req, res) =
   const reqRow = db.prepare('SELECT * FROM digilocker_requests WHERE id = ? AND worker_id = ?').get(req.params.id, req.auth.sub);
   if (!reqRow) return res.status(404).json({ error: 'Unknown DigiLocker request for this worker' });
   try {
-    const result = await setu.fetchDigilockerAadhaar(req.params.id);
-    if (result.status !== 'complete') return res.status(409).json({ error: `DigiLocker flow not complete yet (status: ${result.status})` });
+    const result = await setu.fetchDigilocker(reqRow);
+    if (result.status !== 'complete') return res.status(409).json({ error: 'DigiLocker verification is not finished yet - complete it in the browser, then tap again', pending: true });
 
     const masked = result.aadhaar.maskedNumber;
     const last4 = String(masked || '').replace(/\D/g, '').slice(-4);
@@ -86,13 +97,42 @@ router.get('/digilocker/:id/complete', requireAuth('worker'), async (req, res) =
     const hit = checkDocument('aadhaar_key', key, req.auth.sub);
     if (hit) return refuse(res, req, hit);
 
-    db.prepare('UPDATE workers SET aadhaar_ref_id = ?, aadhaar_masked = ?, aadhaar_key = COALESCE(?, aadhaar_key), aadhaar_name = ?, aadhaar_verified = 1 WHERE id = ?')
-      .run(req.params.id, masked, key, result.aadhaar.name || null, req.auth.sub);
+    // DigiLocker-issued Aadhaar fills whatever the QR scan did not (name/DOB/gender/father/address).
+    db.prepare(`UPDATE workers SET aadhaar_ref_id = ?, aadhaar_masked = ?, aadhaar_key = COALESCE(?, aadhaar_key), aadhaar_name = ?, aadhaar_verified = 1,
+        name = COALESCE(NULLIF(name, ''), ?), dob = COALESCE(NULLIF(dob, ''), ?), gender = COALESCE(NULLIF(gender, ''), ?),
+        father_name = COALESCE(NULLIF(father_name, ''), ?), address = COALESCE(NULLIF(address, ''), ?), aadhaar_photo_url = COALESCE(?, aadhaar_photo_url) WHERE id = ?`)
+      .run(req.params.id, masked, key, result.aadhaar.name || null, result.aadhaar.name || null, result.aadhaar.dateOfBirth || null,
+        result.aadhaar.gender ? result.aadhaar.gender.toLowerCase() : null, result.aadhaar.fatherName || null, result.aadhaar.address || null, result.aadhaar.photoUrl || null, req.auth.sub);
     db.prepare("UPDATE digilocker_requests SET status = 'complete' WHERE id = ?").run(req.params.id);
-    addAudit(req.auth.mobile, 'aadhaar_verified', `Aadhaar verified via DigiLocker, masked ${masked}`);
+    addAudit(req.auth.mobile, 'aadhaar_verified', `Aadhaar verified via DigiLocker (${reqRow.provider || 'setu'}), masked ${masked}`);
+
+    // PAN from the same DigiLocker consent (Meon returns it alongside Aadhaar). A full,
+    // unmasked number is verified on the spot - subject to the same blacklist/duplicate
+    // and name-match rules as the standalone PAN step.
+    let panNote = null;
+    const pan = result.pan;
+    if (pan && pan.number && PAN_RE.test(pan.number) && !pan.masked) {
+      const panHit = checkDocument('pan_number', pan.number, req.auth.sub);
+      if (panHit) return refuse(res, req, panHit);
+      const nm = result.aadhaar.name;
+      if (pan.name && nm && !namesMatch(nm, pan.name)) {
+        panNote = `PAN name "${pan.name}" differs from Aadhaar name "${nm}"`;
+        addAudit(req.auth.mobile, 'pan_name_mismatch', panNote);
+      } else {
+        db.prepare('UPDATE workers SET pan_number = ?, pan_name = ?, pan_verified = 1 WHERE id = ?').run(pan.number, pan.name || nm || null, req.auth.sub);
+        addAudit(req.auth.mobile, 'pan_verified', `PAN verified via DigiLocker: ${pan.number.slice(0, 5)}XXXX${pan.number.slice(-1)}`);
+        panNote = 'verified';
+      }
+    } else if (pan && (pan.number || pan.name)) {
+      // Masked number only: remember the name so the PAN-photo step can cross-check.
+      db.prepare('UPDATE workers SET pan_name = COALESCE(pan_name, ?) WHERE id = ?').run(pan.name || null, req.auth.sub);
+      panNote = 'masked';
+    }
+    const after = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
+    if (after.aadhaar_verified && after.pan_verified) db.prepare("UPDATE workers SET kyc_status = 'verified' WHERE id = ?").run(req.auth.sub);
 
     const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
-    res.json({ verified: true, maskedNumber: masked, nameOnAadhaar: result.aadhaar.name, dob: result.aadhaar.dateOfBirth, gender: result.aadhaar.gender, worker: w });
+    res.json({ verified: true, maskedNumber: masked, nameOnAadhaar: result.aadhaar.name, dob: result.aadhaar.dateOfBirth, gender: result.aadhaar.gender, pan: panNote, worker: w });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -181,6 +221,17 @@ router.post('/pan/verify', requireAuth('worker'), requireConsent, async (req, re
 
   const hit = checkDocument('pan_number', pan, req.auth.sub);
   if (hit) return refuse(res, req, hit);
+
+  // Already verified through DigiLocker (Meon returns PAN with Aadhaar): the card the
+  // worker photographed must be that same PAN.
+  const already = db.prepare('SELECT pan_number, pan_name, pan_verified FROM workers WHERE id = ?').get(req.auth.sub);
+  if (!setu.panApiConfigured() && already && already.pan_verified && already.pan_number) {
+    if (already.pan_number !== pan) return res.status(422).json({ error: `This PAN card (${pan.slice(0, 5)}XXXX${pan.slice(-1)}) is not the PAN verified in DigiLocker - photograph your own PAN card` });
+    return res.json({ verified: true, fullName: already.pan_name, viaDigilocker: true, worker: db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub) });
+  }
+  if (!setu.panApiConfigured()) {
+    return res.status(503).json({ error: 'PAN is verified through DigiLocker in the previous step - complete DigiLocker (Aadhaar + PAN) first', panApiUnavailable: true });
+  }
 
   try {
     const result = await setu.verifyPan(pan);

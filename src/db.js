@@ -193,6 +193,11 @@ db.exec('CREATE INDEX IF NOT EXISTS workers_vendor_status ON workers(vendor_id, 
 addColumnIfMissing('punches', 'selfie_thumb', 'TEXT');
 addColumnIfMissing('workers', 'photo_thumb', 'TEXT');
 addColumnIfMissing('workers', 'reject_reason', 'TEXT');
+// Meon DigiLocker: the request id is Meon's `state`; the client token is needed again to
+// fetch the result. provider = 'meon' | 'setu'.
+addColumnIfMissing('digilocker_requests', 'client_token', 'TEXT');
+addColumnIfMissing('digilocker_requests', 'provider', 'TEXT');
+addColumnIfMissing('workers', 'aadhaar_photo_url', 'TEXT'); // DigiLocker-issued photo (URL on the provider), for HR face review
 db.exec('CREATE TABLE IF NOT EXISTS vendor_invoices (id TEXT PRIMARY KEY, vendor_id TEXT NOT NULL REFERENCES vendors(id), month TEXT NOT NULL, invoice_days REAL NOT NULL, invoice_ref TEXT, amount REAL, entered_by TEXT NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (vendor_id, month))');
 db.exec('CREATE TABLE IF NOT EXISTS attendance_locks (month TEXT PRIMARY KEY, locked_by TEXT NOT NULL, locked_at INTEGER NOT NULL)');
 // R17/R18: server-side login sessions (logout + admin 15-minute idle timeout).

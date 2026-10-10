@@ -3,7 +3,7 @@ const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const gemini = require('../services/geminiClient');
-const setu = require('../services/setuClient');
+const setu = require('../services/kycProvider'); // Meon (live) or Setu, same interface
 const { parseAadhaarQr, aadhaarKey, careOfName } = require('../services/aadhaarQr');
 const { decodeQrFromDataUrl } = require('../services/qrImage');
 const { namesMatch } = require('../services/nameMatch');
@@ -175,7 +175,7 @@ router.post('/vendor-kyc/pan-verify', requirePermission('masters.write'), async 
   const aadhaarName = (req.body || {}).aadhaarName || null;
   const vendorId = (req.body || {}).vendorId || null;
   if (!PAN_RE.test(pan)) return res.status(400).json({ error: 'Enter a valid PAN, e.g. ABCDE1234F' });
-  if (!setu.isConfigured()) return res.status(503).json({ error: 'PAN verification needs Setu credentials (not configured yet) — the OCR-read PAN is saved as unverified for now' });
+  if (!setu.panApiConfigured()) return res.status(503).json({ error: 'Standalone PAN verification API is not enabled yet - the OCR-read PAN is saved as unverified for now', panApiUnavailable: true });
   try {
     const result = await setu.verifyPan(pan);
     if (result.verification !== 'success') return res.status(422).json({ error: result.message || 'PAN verification failed', raw: result });
