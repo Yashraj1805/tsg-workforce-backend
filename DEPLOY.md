@@ -52,6 +52,17 @@ and creates everyone else from Users, each with a temporary password they must c
   - `WATI_API_URL` + `WATI_API_TOKEN` + `WATI_OTP_TEMPLATE` (WhatsApp)
     and/or `SMS_WEBHOOK_URL` (SMS fallback)
 
+## Website: car details by registration number
+
+`POST https://<backend>/api/public/vehicle` with header `X-Website-Key: <WEBSITE_API_KEY>`
+and body `{"regNo":"MH12AB1234"}` → `{ ok, regNo, vehicle: {...}, cached }`. 404 = no record,
+400 = bad number, 429 = that visitor's IP hit `VEHICLE_LOOKUPS_PER_HOUR`. Results are cached
+`VEHICLE_CACHE_DAYS` so repeats are free; `GET /api/public/vehicle/usage` (same header)
+gives this month's billable vs cached counts for Finance. Call it from the website's
+server side (PHP/Node) so the website key stays out of the browser; if it must be called
+from the browser, add the website's origin to `cors()` in `server.js` and accept that the
+key is visible (the per-IP limit is then the only cost guard).
+
 ## Pointing the app at it
 
 In the APK: start screen → **Server settings** → paste the Railway URL → save. The
