@@ -40,6 +40,9 @@ app.use('/api/auth', small, authLimit);
 app.use(['/api/auth/worker/otp/request', '/api/assisted/otp/request'], otpLimit);
 app.use('/api/assisted/otp', small);
 app.use('/api/kiosk/pair', small, pairLimit);
+// Website vehicle lookup: tiny bodies, strict per-IP limit (each uncached call is billed).
+const vehicleLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: Number(process.env.VEHICLE_LOOKUPS_PER_HOUR || 20), standardHeaders: 'draft-7', legacyHeaders: false, message: { error: 'Too many lookups from this network - try again in an hour' } });
+app.use('/api/public/vehicle', small, vehicleLimit);
 app.use(express.json({ limit: '8mb' })); // selfies/photos travel as base64 data URLs for now
 
 // ---- Health: deep enough that a monitor notices a broken DB, a full disk or a missed
@@ -74,6 +77,7 @@ app.use('/api', require('./routes/kiosk')); // /api/kiosks (admin), /api/kiosk/*
 app.use('/api/system', require('./routes/system'));
 app.use('/api/worker-requests', require('./routes/workerRequests'));
 app.use('/api/assistant', require('./routes/assistant'));
+app.use('/api/public', require('./routes/vehicle')); // website: /api/public/vehicle (Meon Vahan RC lookup)
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 // eslint-disable-next-line no-unused-vars
