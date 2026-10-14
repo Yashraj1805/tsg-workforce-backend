@@ -1,8 +1,7 @@
-// OTP generation + verification. Delivery (actually sending the SMS/email) is not
-// wired up yet — that needs an SMS gateway (WATI or similar) for worker mobiles and
-// an email provider for HR logins, neither of which has been sourced yet (same category
-// of gap as face-match). In dev mode we log the OTP and return it in the API response
-// so the flow is fully testable end-to-end without that piece.
+// OTP generation + verification. Delivery (services/notify.js) goes out over WhatsApp
+// (Meta Cloud API) or SMS for worker mobiles, and email for HR logins — each channel is
+// a no-op until its own env vars are set. In dev mode we log the OTP and return it in the
+// API response so the flow is fully testable end-to-end without any of that configured.
 //
 // BRD §10 screen 3: "Resend after 30 s. Lock for 15 min after 3 wrong tries." The lock
 // lives in its own table so requesting a fresh OTP can't be used to escape it.

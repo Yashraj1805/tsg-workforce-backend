@@ -4,7 +4,7 @@
 // receivers (e.g. Purchase for the vendor bill check) — "Set once by central HR".
 // Blocked punches go out immediately from services/alerts.js, not from here.
 // R21: the manager's daily email is also sent as a WhatsApp message when that manager has
-// a mobile number on their admin account and WATI is configured.
+// a mobile number on their admin account and the WhatsApp Cloud API is configured.
 const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
 const { sendEmail, sendWhatsApp } = require('./notify');

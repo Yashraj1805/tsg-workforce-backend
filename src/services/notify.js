@@ -4,9 +4,13 @@
 // callers do; this only delivers.
 //
 //   SMS       SMS_WEBHOOK_URL (+ SMS_WEBHOOK_TOKEN): POST {to, message} — fits most Indian
-//             SMS gateways' HTTP APIs behind a small proxy, or a WATI/MSG91 webhook
+//             SMS gateways' HTTP APIs behind a small proxy
 //   Email     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM (nodemailer)
-//   WhatsApp  WATI_API_URL + WATI_API_TOKEN (R21)
+//   WhatsApp  Meta WhatsApp Cloud API, direct (no BSP in between) — WHATSAPP_ACCESS_TOKEN +
+//             WHATSAPP_PHONE_NUMBER_ID, docs: developers.facebook.com/docs/whatsapp/cloud-api.
+//             OTPs need an approved *Authentication*-category template (WHATSAPP_OTP_TEMPLATE);
+//             a plain free-text message (sendWhatsApp, R21 report copies) only delivers inside
+//             the 24h customer-service window Meta opens after the customer last messaged in.
 const { addAudit } = require('../db');
 
 let mailer = null;
@@ -70,33 +74,50 @@ function saveToOutbox(to, subject, text, attachments) {
   } catch (e) { /* preview only */ }
 }
 
-// R21: WhatsApp copy of a report. WATI's "send session message" endpoint; works only once
-// a WATI account + approved template exist.
+const WA_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v21.0';
+function waConfigured() { return !!(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID); }
+async function waSend(body) {
+  const r = await fetch(`https://graph.facebook.com/${WA_API_VERSION}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + process.env.WHATSAPP_ACCESS_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', ...body }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error?.message || `WhatsApp Cloud API HTTP ${r.status}`);
+  return data;
+}
+
+// R21: WhatsApp copy of a report. A plain text message — only deliverable inside the 24h
+// window Meta opens after the customer last messaged the business number.
 async function sendWhatsApp(toMobile, message) {
-  if (!process.env.WATI_API_URL || !process.env.WATI_API_TOKEN) { console.log(`[WhatsApp not sent — WATI not configured] to ${toMobile}`); return { ok: false, skipped: true }; }
+  if (!waConfigured()) { console.log(`[WhatsApp not sent — Cloud API not configured] to ${toMobile}`); return { ok: false, skipped: true }; }
   try {
-    const r = await fetch(`${process.env.WATI_API_URL.replace(/\/$/, '')}/api/v1/sendSessionMessage/91${toMobile}?messageText=${encodeURIComponent(message)}`, {
-      method: 'POST', headers: { Authorization: 'Bearer ' + process.env.WATI_API_TOKEN },
-    });
-    if (!r.ok) throw new Error(`WATI HTTP ${r.status}`);
+    await waSend({ to: '91' + toMobile, type: 'text', text: { body: message } });
     return { ok: true };
   } catch (e) { console.error('[WhatsApp failed]', toMobile, e.message); return { ok: false, error: e.message }; }
 }
 
-// WhatsApp OTP uses a Meta-approved *authentication* template (WATI_OTP_TEMPLATE, the
-// template's name in WATI) — a free-text session message can't open a conversation, so
-// sendWhatsApp() above is not usable for this. The template's one variable is the code.
+// WhatsApp OTP uses a Meta-approved *authentication*-category template (WHATSAPP_OTP_TEMPLATE,
+// the template's name as approved in Meta Business Manager) — a free-text message can't open
+// a conversation, so sendWhatsApp() above is not usable for this. The template's one body
+// variable is the code. If the approved template also has a "Copy Code" button (Meta's newer
+// authentication templates default to this), uncomment the `components` button entry below —
+// without knowing your exact template shape yet, this ships with the plain body-only form.
 async function sendWhatsAppOtp(toMobile, code) {
-  if (!process.env.WATI_API_URL || !process.env.WATI_API_TOKEN || !process.env.WATI_OTP_TEMPLATE) return { ok: false, skipped: true };
+  if (!waConfigured() || !process.env.WHATSAPP_OTP_TEMPLATE) return { ok: false, skipped: true };
   try {
-    const r = await fetch(`${process.env.WATI_API_URL.replace(/\/$/, '')}/api/v1/sendTemplateMessage?whatsappNumber=91${toMobile}`, {
-      method: 'POST', headers: { Authorization: 'Bearer ' + process.env.WATI_API_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ template_name: process.env.WATI_OTP_TEMPLATE, broadcast_name: 'otp', parameters: [{ name: '1', value: code }] }),
+    await waSend({
+      to: '91' + toMobile,
+      type: 'template',
+      template: {
+        name: process.env.WHATSAPP_OTP_TEMPLATE,
+        language: { code: process.env.WHATSAPP_OTP_TEMPLATE_LANG || 'en_US' },
+        components: [
+          { type: 'body', parameters: [{ type: 'text', text: code }] },
+          // { type: 'button', sub_type: 'copy_code', index: '0', parameters: [{ type: 'coupon_code', coupon_code: code }] },
+        ],
+      },
     });
-    const body = await r.json().catch(() => ({}));
-    // WATI returns 200 with result:false for an unknown/non-WhatsApp number — that must
-    // count as a failure so the SMS fallback kicks in, not as "sent".
-    if (!r.ok || body.result === false) throw new Error(body.info || `WATI HTTP ${r.status}`);
     return { ok: true };
   } catch (e) { console.error('[WhatsApp OTP failed]', toMobile, e.message); return { ok: false, error: e.message }; }
 }

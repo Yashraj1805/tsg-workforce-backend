@@ -8,7 +8,7 @@ const router = express.Router();
 
 router.get('/', requirePermission('emails.manage'), (req, res) => {
   res.json({ reports: emails.settings(), runs: emails.recentRuns(),
-    delivery: { email: !!process.env.SMTP_HOST, whatsapp: !!(process.env.WATI_API_URL && process.env.WATI_API_TOKEN) } });
+    delivery: { email: !!process.env.SMTP_HOST, whatsapp: !!(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID) } });
 });
 
 router.put('/:key', requirePermission('emails.manage'), (req, res) => {
