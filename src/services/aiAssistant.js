@@ -7,7 +7,7 @@
 // The model is never allowed to invent a number or write SQL. It only ever:
 //  1. extracts a date range / worker name / site / vendor from the question,
 //  2. that's used to call the SAME scoped report functions (services/reports.js) the
-//     dashboard and Excel exports already use — so the RBAC scope (a Site HR only ever
+//     dashboard and Excel exports already use — so the RBAC scope (a Team Lead only ever
 //     sees their own site, etc.) applies exactly as it does everywhere else,
 //  3. a second call turns the real result into a short answer, told explicitly to only
 //     state what's in the data — so every number in the reply traces back to an actual

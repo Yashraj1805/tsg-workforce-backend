@@ -1,6 +1,6 @@
 // Server-side login sessions (BRD R17 "Audit log of every change, login and logout",
 // R18 "Admin login ... Logout after 15 minutes idle"). Kinds: worker, admin, and
-// assisted (Site HR registering a worker on HR's phone — idles out like admin).
+// assisted (Team Lead registering a worker on the Team Lead's phone — idles out like admin).
 //
 // Every token carries a session id (`sid`). The session row is what makes logout and
 // idle-timeout real: once it's ended, the token stops working server-side even though

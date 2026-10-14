@@ -8,9 +8,9 @@ const gemini = require('../services/geminiClient');
 
 const router = express.Router();
 
-// Raised by site HR on a worker's behalf — workers cannot self-raise (BRD screen 10:
-// "Worker cannot edit. Button calls site HR" / R13). The worker must be inside the
-// raiser's scope, so a site HR can't raise for another site's staff.
+// Raised by Team Lead on a worker's behalf — workers cannot self-raise (BRD screen 10:
+// "Worker cannot edit. Button calls Team Lead" / R13). The worker must be inside the
+// raiser's scope, so a Team Lead can't raise for another site's staff.
 router.post('/', requirePermission('regularisations.raise'), async (req, res) => {
   const { workerId, date, reason } = req.body || {};
   if (!workerId || !date || !reason) return res.status(400).json({ error: 'workerId, date and reason are required' });
@@ -46,7 +46,7 @@ router.post('/', requirePermission('regularisations.raise'), async (req, res) =>
   res.status(201).json(db.prepare('SELECT * FROM regularisations WHERE id = ?').get(id));
 });
 
-// Worker: read-only view of their own regularisation requests (raised by site HR on
+// Worker: read-only view of their own regularisation requests (raised by Team Lead on
 // their behalf — see the POST handler above for why workers can't raise their own).
 router.get('/mine', requireAuth('worker'), (req, res) => {
   res.json(db.prepare('SELECT * FROM regularisations WHERE worker_id = ? ORDER BY created_at DESC').all(req.auth.sub));

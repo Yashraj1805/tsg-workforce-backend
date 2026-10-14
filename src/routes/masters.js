@@ -20,7 +20,7 @@ const PAN_RE = /^[A-Z]{5}\d{4}[A-Z]$/;
 router.get('/vendors', requireAuth(), (req, res) => {
   const rows = db.prepare('SELECT * FROM vendors ORDER BY created_at DESC').all();
   // The contact person's PAN/Aadhaar details are for the System Admin who verifies them —
-  // a worker picking their agency, or a Site HR, gets the business fields only.
+  // a worker picking their agency, or a Team Lead, gets the business fields only.
   if (req.user && can(req.user.role, 'masters.write')) return res.json(rows);
   res.json(rows.map(v => { const o = { ...v }; for (const c of VENDOR_KYC_COLS) delete o[c]; o.contact_kyc_done = !!(v.contact_pan_verified && v.contact_aadhaar_verified); return o; }));
 });

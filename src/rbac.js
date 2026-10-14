@@ -9,7 +9,7 @@
 
 const ROLES = {
   reporting_manager: 'Reporting Manager',
-  site_hr: 'Site HR',
+  site_hr: 'Team Lead',
   central_hr: 'Central HR',
   location_head: 'Location Head',
   vendor_coordinator: 'Vendor Coordinator',
@@ -32,7 +32,7 @@ const ROLE_SCOPE = {
 };
 
 // BRD §5, mapped onto what the API actually exposes. "Cannot do" column is enforced by
-// omission — e.g. nobody but central_hr has workers.approve, so site HR can't approve
+// omission — e.g. nobody but central_hr has workers.approve, so Team Lead can't approve
 // their own requests, and security/MIS/location head/vendor coordinator have no write
 // permission at all.
 const PERMISSIONS = {
@@ -55,13 +55,18 @@ const PERMISSIONS = {
   'emails.manage':         ['central_hr'],
   'billing.write':         ['mis_finance'],
   'attendance.lock':       ['central_hr'],
-  // BRD §7.8: Site HR registers a worker on their own phone, worker present (face + OTP).
+  // BRD §7.8: Team Lead registers a worker on their own phone, worker present (face + OTP).
   'workers.register_assisted': ['site_hr'],
+  // Team lead pre-creates a worker's login (name, mobile, vendor, site, job) before the
+  // worker ever opens the app; the worker then only has to log in and clear KYC — never
+  // self-register from scratch. Punch-in still waits on approval (Aadhaar+PAN verified),
+  // same gate as every other path — this only skips the initial blank-form step.
+  'workers.create_direct': ['site_hr', 'central_hr'],
   // Proposal: "No HR approval, no entry. Security at the gate checks the portal."
   'workers.gatecheck':     ['security', 'site_hr', 'central_hr', 'location_head'],
   // R20 gate tablets: set up / pair / retire a site's kiosk.
   'kiosks.manage':         ['system_admin', 'central_hr'],
-  // Proposal process 3: hiring manager / Site HR request a transfer or exit; Central HR completes it.
+  // Proposal process 3: hiring manager / Team Lead request a transfer or exit; Central HR completes it.
   'requests.raise':        ['reporting_manager', 'site_hr', 'central_hr'],
   'requests.view':         ['reporting_manager', 'site_hr', 'central_hr', 'location_head'],
 };

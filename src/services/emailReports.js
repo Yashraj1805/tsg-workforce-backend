@@ -1,5 +1,5 @@
 // Automatic emails (BRD R15, §16). Each report is built per audience (a manager gets only
-// their own team, a Site HR only their site), with an Excel attachment, and sent on its
+// their own team, a Team Lead only their site), with an Excel attachment, and sent on its
 // schedule in IST. Central HR can switch each report on/off, change its time and add
 // receivers (e.g. Purchase for the vendor bill check) — "Set once by central HR".
 // Blocked punches go out immediately from services/alerts.js, not from here.
@@ -54,8 +54,8 @@ db.exec('CREATE UNIQUE INDEX IF NOT EXISTS email_runs_period ON email_runs(repor
 // BRD §16 table. schedule: daily | weekly (weekday 1 = Monday) | monthly (1st of month).
 const REPORTS = [
   { key: 'my_team', title: 'My team today', to: 'Each reporting manager (+ WhatsApp copy)', schedule: 'daily', time: '10:30', shows: 'Own staff: present with in-time, absent, not punched' },
-  { key: 'site_summary', title: 'Site summary', to: 'Site HR, location head', schedule: 'daily', time: '11:00', shows: 'Present and absent by vendor and job' },
-  { key: 'missed_punch_out', title: 'Missed punch-out', to: 'Site HR, reporting manager', schedule: 'daily', time: '20:00', shows: 'Staff who punched in but not out' },
+  { key: 'site_summary', title: 'Site summary', to: 'Team Lead, location head', schedule: 'daily', time: '11:00', shows: 'Present and absent by vendor and job' },
+  { key: 'missed_punch_out', title: 'Missed punch-out', to: 'Team Lead, reporting manager', schedule: 'daily', time: '20:00', shows: 'Staff who punched in but not out' },
   { key: 'pending_approvals', title: 'Pending approvals', to: 'Central HR', schedule: 'daily', time: '09:00', shows: 'Workers waiting for approval' },
   { key: 'weekly_summary', title: 'Weekly summary', to: 'Central HR', schedule: 'weekly', weekday: 1, time: '09:00', shows: 'Attendance % by location and vendor' },
   { key: 'muster_roll', title: 'Muster roll', to: 'HR, Finance, vendor', schedule: 'monthly', time: '09:00', shows: 'Day-wise attendance per vendor (last month)' },

@@ -1,9 +1,9 @@
 // Proposal "Process 3: transfer and exit":
-//   Transfer — requested by the hiring manager → accepted at the new location by Site HR →
+//   Transfer — requested by the hiring manager → accepted at the new location by Team Lead →
 //              location updated in the portal by Central HR.
 //   Exit     — informed the same day by the hiring manager → login deactivated by Central
 //              HR → misconduct: blacklisted by Central HR.
-// Reporting managers and Site HR raise requests for workers they can see; an exit request
+// Reporting managers and Team Lead raise requests for workers they can see; an exit request
 // emails Central HR immediately; Central HR completes it (the same performTransfer /
 // performExit as the HR screen), which writes the worker's history.
 const express = require('express');
@@ -23,7 +23,7 @@ const router = express.Router();
 const get = (id) => db.prepare('SELECT * FROM worker_requests WHERE id = ?').get(id);
 const centralEmails = () => db.prepare("SELECT email FROM hr_users WHERE status = 'active' AND role = 'central_hr'").all().map(r => r.email);
 
-// Requests visible to this user: for workers in their scope, plus (Site HR) transfers
+// Requests visible to this user: for workers in their scope, plus (Team Lead) transfers
 // coming into their site, plus their own.
 function visible(user) {
   const s = workerScopeSql(user, 'w');
@@ -70,13 +70,13 @@ router.post('/', requirePermission('requests.raise'), (req, res) => {
   res.status(201).json(get(id));
 });
 
-// Site HR of the new location accepts the incoming worker.
+// Team Lead of the new location accepts the incoming worker.
 router.post('/:id/accept', requirePermission('requests.raise'), (req, res) => {
   const r = get(req.params.id);
   if (!r) return res.status(404).json({ error: 'Not found' });
   if (r.type !== 'transfer' || r.status !== 'pending') return res.status(400).json({ error: 'Only a pending transfer can be accepted' });
   if (!(req.user.role === 'site_hr' && req.user.location_id === r.to_location_id) && req.user.role !== 'central_hr') {
-    return res.status(403).json({ error: 'Only the Site HR of the new location can accept this transfer' });
+    return res.status(403).json({ error: 'Only the Team Lead of the new location can accept this transfer' });
   }
   db.prepare("UPDATE worker_requests SET status = 'accepted', accepted_by = ?, accepted_at = ? WHERE id = ?").run(req.user.email, Date.now(), r.id);
   addAudit(req.user.email, 'accept_transfer', r.worker_id);
@@ -88,7 +88,7 @@ router.post('/:id/complete', requirePermission('workers.manage'), (req, res) => 
   const r = get(req.params.id);
   if (!r) return res.status(404).json({ error: 'Not found' });
   if (r.status !== 'accepted' && !(r.type === 'exit' && r.status === 'pending')) {
-    return res.status(400).json({ error: r.status === 'pending' ? 'Waiting for the new site\'s Site HR to accept' : `Request is already ${r.status}` });
+    return res.status(400).json({ error: r.status === 'pending' ? 'Waiting for the new site\'s Team Lead to accept' : `Request is already ${r.status}` });
   }
   const w = getScopedWorker(req.user, r.worker_id);
   if (!w) return res.status(404).json({ error: 'Worker not found' });
@@ -109,7 +109,7 @@ router.post('/:id/reject', requirePermission('requests.raise'), (req, res) => {
   const note = ((req.body || {}).reason || '').trim();
   if (!note) return res.status(400).json({ error: 'reason is required' });
   const mayReject = req.user.role === 'central_hr' || (req.user.role === 'site_hr' && r.type === 'transfer' && req.user.location_id === r.to_location_id);
-  if (!mayReject) return res.status(403).json({ error: 'Only Central HR or the receiving Site HR can reject this' });
+  if (!mayReject) return res.status(403).json({ error: 'Only Central HR or the receiving Team Lead can reject this' });
   db.prepare("UPDATE worker_requests SET status = 'rejected', decided_by = ?, decided_at = ?, decision_note = ? WHERE id = ?").run(req.user.email, Date.now(), note, r.id);
   addAudit(req.user.email, 'reject_request', `${r.type} ${r.worker_id}: ${note}`);
   res.json(get(r.id));

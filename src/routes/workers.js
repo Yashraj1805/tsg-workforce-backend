@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
-const { workerScopeSql } = require('../rbac');
+const { workerScopeSql, ROLE_SCOPE } = require('../rbac');
 const setu = require('../services/kycProvider'); // Meon (live) or Setu, same interface
 const time = require('../services/time');
 const { namesMatch } = require('../services/nameMatch');
@@ -46,7 +46,7 @@ router.get('/me', requireAuth('worker'), (req, res) => {
   // pre-punch GPS/geofence check without needing a separate HR-only endpoint.
   const location = w.location_id ? db.prepare('SELECT id, name, brand, lat, lng, radius, accuracy_limit, weekly_off FROM locations WHERE id = ?').get(w.location_id) : null;
   const vendor = w.vendor_id ? db.prepare('SELECT id, name, phone FROM vendors WHERE id = ?').get(w.vendor_id) : null;
-  // BRD §11 screen 10: "Missed punch — worker cannot edit. Button calls site HR."
+  // BRD §11 screen 10: "Missed punch — worker cannot edit. Button calls Team Lead."
   const siteHr = w.location_id ? db.prepare("SELECT name, phone FROM hr_users WHERE role = 'site_hr' AND status = 'active' AND location_id = ? AND phone IS NOT NULL ORDER BY created_at LIMIT 1").get(w.location_id) : null;
   res.json({ ...w, location, vendor, siteHr: siteHr || null });
 });
@@ -57,7 +57,7 @@ router.put('/me', requireAuth('worker'), async (req, res) => {
   if (w.status === 'approved') return res.status(400).json({ error: 'Approved profile cannot be self-edited — contact HR' });
 
   // location_id is NOT editable here: BRD §10 screen 9 "Site is set by GPS" — see
-  // POST /me/site-from-gps (or the Site HR's site, for assisted registration).
+  // POST /me/site-from-gps (or the Team Lead's site, for assisted registration).
   // designation follows job_id (screen 8: one choice from the admin's job list).
   const fields = ['name', 'father_name', 'dob', 'gender', 'address', 'emergency_contact',
     'vendor_id', 'vendor_code', 'job_id', 'doj', 'qualification', 'experience', 'photo_data_url', 'bank_passbook_data_url'];
@@ -123,7 +123,7 @@ router.post('/me/site-from-gps', requireAuth('worker'), (req, res) => {
   const w = getWorker(req.auth.sub);
   if (!w) return res.status(404).json({ error: 'Worker not found' });
   if (w.status === 'approved') return res.status(400).json({ error: 'Approved profile cannot be self-edited — contact HR' });
-  if (req.auth.assistedBy) return res.status(400).json({ error: 'Registered by Site HR — the site is the Site HR\'s own location' });
+  if (req.auth.assistedBy) return res.status(400).json({ error: 'Registered by Team Lead — the site is the Team Lead\'s own location' });
   const { lat, lng, accuracy } = req.body || {};
   if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng are required' });
   const inside = db.prepare('SELECT * FROM locations').all()
@@ -147,7 +147,7 @@ router.post('/me/consent', requireAuth('worker'), (req, res) => {
   db.prepare('INSERT INTO consents (id, worker_id, version, language, accepted_at, device_id, assisted_by) VALUES (?,?,?,?,?,?,?)')
     .run(crypto.randomUUID(), req.auth.sub, version, language || null, now, (req.body || {}).deviceId || null, req.auth.assistedByEmail || null);
   db.prepare('UPDATE workers SET consent_version = ?, consent_at = ? WHERE id = ?').run(version, now, req.auth.sub);
-  addAudit(req.auth.mobile, 'consent_given', `Consent ${version} (${language || '?'})${req.auth.assistedByEmail ? `, with Site HR ${req.auth.assistedByEmail}` : ''}`);
+  addAudit(req.auth.mobile, 'consent_given', `Consent ${version} (${language || '?'})${req.auth.assistedByEmail ? `, with Team Lead ${req.auth.assistedByEmail}` : ''}`);
   res.json(getWorker(req.auth.sub));
 });
 
@@ -203,6 +203,56 @@ function refuseSubmit(res, w, hit) {
   return res.status(hit.status).json({ error: hit.error, blocked: hit.kind });
 }
 
+// ---- Team lead / HR: create a worker's login directly (no worker-present OTP step —
+// that's what workers.register_assisted is for). Name, mobile, vendor, site and job are
+// filled in now; the worker still has to log in themselves, clear KYC (Aadhaar + PAN) and
+// be approved before they can punch in — this only replaces the blank self-registration
+// form with one that already knows who they are.
+router.post('/', requirePermission('workers.create_direct'), (req, res) => {
+  const { mobile, name, jobId, vendorId, locationId } = req.body || {};
+  if (!/^\d{10}$/.test(mobile || '')) return res.status(400).json({ error: 'Valid 10-digit mobile number required' });
+  if (!(name || '').trim()) return res.status(400).json({ error: 'Name is required' });
+
+  const existing = db.prepare('SELECT status, blacklisted FROM workers WHERE mobile = ?').get(mobile);
+  if (existing && existing.blacklisted) return res.status(403).json({ error: 'This mobile belongs to a blacklisted worker and cannot be added again' });
+  if (existing) return res.status(409).json({ error: `This mobile is already registered (status: ${existing.status})` });
+
+  const scope = ROLE_SCOPE[req.user.role];
+  let location_id = null;
+  if (scope === 'location') {
+    if (!req.user.location_id) return res.status(400).json({ error: 'Your account has no site assigned — ask a System Admin to set your location first' });
+    location_id = req.user.location_id;
+  } else if (locationId) {
+    if (!db.prepare('SELECT 1 FROM locations WHERE id = ?').get(locationId)) return res.status(400).json({ error: 'Selected site does not exist' });
+    location_id = locationId;
+  }
+
+  let job_id = null, designation = null;
+  if (jobId) {
+    const job = db.prepare('SELECT * FROM jobs WHERE id = ? AND active = 1').get(jobId);
+    if (!job) return res.status(400).json({ error: 'Pick a job from the list' });
+    job_id = job.id; designation = job.name;
+  }
+
+  let vendor_id = null;
+  if (vendorId) {
+    const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(vendorId);
+    if (!vendor) return res.status(400).json({ error: 'Selected vendor does not exist' });
+    const today = time.today();
+    if (vendor.status !== 'active' || (vendor.contract_end && vendor.contract_end < today) || (vendor.contract_start && vendor.contract_start > today)) {
+      return res.status(400).json({ error: `${vendor.name} has no active contract — choose another vendor or ask a System Admin` });
+    }
+    vendor_id = vendor.id;
+  }
+
+  const id = crypto.randomUUID();
+  db.prepare(`INSERT INTO workers (id, mobile, name, job_id, designation, vendor_id, location_id, status, kyc_status, registered_by, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, mobile, name.trim(), job_id, designation, vendor_id, location_id, 'draft', 'pending', req.auth.email, Date.now());
+  addAudit(req.auth.email, 'worker_direct_create', `${name.trim()} (${mobile}) added directly by ${req.user.role}${vendor_id ? `, vendor ${vendorId}` : ''}${location_id ? `, site ${location_id}` : ''}`);
+  res.status(201).json(publicWorker(getWorker(id), req.user, { detail: true }));
+});
+
 // ---- HR: review and manage workers ----
 // ---- Gate check (proposal: "No HR approval, no entry. Security at the gate checks the
 // portal.") Search by mobile or name; returns only what a guard needs to decide entry —
@@ -225,7 +275,7 @@ router.get('/gate-check', requirePermission('workers.gatecheck'), (req, res) => 
   })));
 });
 
-// Every admin read goes through the caller's scope (rbac.js) — e.g. a site HR only
+// Every admin read goes through the caller's scope (rbac.js) — e.g. a Team Lead only
 // ever sees their own location's workers, a vendor coordinator only their vendor's.
 // vendor_name / location_name are joined in so a list can say which agency each
 // worker came from without a lookup per row.
@@ -358,7 +408,7 @@ router.post('/:id/reject', requirePermission('workers.approve'), (req, res) => {
   if (reason.length < 3) return res.status(400).json({ error: 'Give the reason for rejecting — the worker is told this' });
   db.prepare("UPDATE workers SET status = 'rejected', reject_reason = ? WHERE id = ?").run(reason.slice(0, 300), w.id);
   addAudit(req.auth.email, 'reject_registration', `Rejected ${w.name}: ${reason}`);
-  notifyWorker(w, `TSG Workforce: your registration was not approved. Reason: ${reason}. Contact your Site HR for help.`);
+  notifyWorker(w, `TSG Workforce: your registration was not approved. Reason: ${reason}. Contact your Team Lead for help.`);
   res.json(getWorker(w.id));
 });
 

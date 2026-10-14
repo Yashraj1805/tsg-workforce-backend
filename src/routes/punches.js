@@ -131,7 +131,7 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   if (opts.kiosk) {
     // R20 gate tablet: no personal phone to bind, so the face is the only proof of who is
     // punching — it must positively match, and if it can't be checked the punch is refused.
-    if (!gemini.isConfigured() || !w.photo_data_url) return { ok: false, status: 503, body: { error: 'Face check is not available on the gate tablet right now — punch on your phone or ask Site HR' } };
+    if (!gemini.isConfigured() || !w.photo_data_url) return { ok: false, status: 503, body: { error: 'Face check is not available on the gate tablet right now — punch on your phone or ask Team Lead' } };
     const r = await gemini.compareFaces(w.photo_data_url, selfieDataUrl);
     if (!r.ok) return { ok: false, status: 503, body: { error: 'Face check failed — try again' } };
     const kNote = `[gate tablet ${opts.kiosk.name}] samePerson=${r.samePerson} confidence=${r.confidence} spoofSuspected=${r.spoofSuspected}: ${r.reason}`;
@@ -228,8 +228,8 @@ router.post('/', requireAuth('worker'), async (req, res) => {
   // R03 one phone per worker: a punch without a device id would skip the binding check.
   if (!deviceId || typeof deviceId !== 'string') return res.status(400).json({ error: 'deviceId is required — update the app' });
   const bad = checkImages(req.body, IMAGE_SPEC); if (bad) return res.status(bad.status).json({ error: bad.error });
-  // BRD §7.8: "Punching is always done by the worker" — a Site HR assisted-registration
-  // token (routes/assisted.js) must never punch, or bind HR's phone as the worker's.
+  // BRD §7.8: "Punching is always done by the worker" — a Team Lead assisted-registration
+  // token (routes/assisted.js) must never punch, or bind the Team Lead's phone as the worker's.
   if (req.auth.assistedBy) return res.status(403).json({ error: 'Punching is always done by the worker on their own phone' });
 
   const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
@@ -246,7 +246,7 @@ router.post('/', requireAuth('worker'), async (req, res) => {
 // original time comes from Android's elapsedRealtime (can't be changed by the user):
 //   original time = server receive time − (elapsed now − elapsed at capture)
 // That only holds on the same boot, so a punch from before a phone restart is refused
-// (Site HR raises a missed-punch request instead). Every other check — site fence, face,
+// (Team Lead raises a missed-punch request instead). Every other check — site fence, face,
 // device, fake GPS, one-in-one-out — runs exactly as for a live punch, via evaluatePunch.
 const OFFLINE_MAX_MS = 12 * 3600000;
 
@@ -265,14 +265,14 @@ router.post('/offline', requireAuth('worker'), async (req, res) => {
   if (seen) return res.status(seen.result === 'ok' ? 200 : 422).json({ duplicate: true, ok: seen.result === 'ok', id: seen.id, type: seen.type, ts: seen.ts, reason: seen.reason });
 
   if (typeof capturedElapsedMs !== 'number' || typeof nowElapsedMs !== 'number') {
-    return res.status(400).json({ error: 'This phone cannot prove the punch time (no device clock) — ask Site HR to raise a missed-punch request', reason: 'offline_no_clock' });
+    return res.status(400).json({ error: 'This phone cannot prove the punch time (no device clock) — ask Team Lead to raise a missed-punch request', reason: 'offline_no_clock' });
   }
   if (capturedBootCount != null && nowBootCount != null && capturedBootCount !== nowBootCount) {
-    return res.status(422).json({ error: 'The phone restarted after this punch, so its time cannot be proven — ask Site HR to raise a missed-punch request', reason: 'offline_rebooted' });
+    return res.status(422).json({ error: 'The phone restarted after this punch, so its time cannot be proven — ask Team Lead to raise a missed-punch request', reason: 'offline_rebooted' });
   }
   const sinceCapture = nowElapsedMs - capturedElapsedMs;
-  if (sinceCapture < 0) return res.status(422).json({ error: 'The phone restarted after this punch — ask Site HR to raise a missed-punch request', reason: 'offline_rebooted' });
-  if (sinceCapture > OFFLINE_MAX_MS) return res.status(422).json({ error: 'Offline punches must be sent within 12 hours — ask Site HR to raise a missed-punch request', reason: 'offline_expired' });
+  if (sinceCapture < 0) return res.status(422).json({ error: 'The phone restarted after this punch — ask Team Lead to raise a missed-punch request', reason: 'offline_rebooted' });
+  if (sinceCapture > OFFLINE_MAX_MS) return res.status(422).json({ error: 'Offline punches must be sent within 12 hours — ask Team Lead to raise a missed-punch request', reason: 'offline_expired' });
 
   const w = db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub);
   if (!w) return res.status(404).json({ error: 'Worker not found' });

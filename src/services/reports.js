@@ -1,6 +1,6 @@
 // Report data shared by the dashboard, the Excel downloads (R16) and the automatic emails
 // (R15). Every query takes the caller's worker scope (rbac.workerScopeSql, alias w), so a
-// Site HR's report only ever contains their site, a vendor coordinator's only their vendor.
+// Team Lead's report only ever contains their site, a vendor coordinator's only their vendor.
 // BRD §16: "All reports can be filtered by date, brand, location, vendor and job".
 const ExcelJS = require('exceljs');
 const { db } = require('../db');

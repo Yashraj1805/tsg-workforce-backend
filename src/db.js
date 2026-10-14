@@ -210,7 +210,7 @@ db.exec('CREATE TABLE IF NOT EXISTS attendance_locks (month TEXT PRIMARY KEY, lo
 // R17/R18: server-side login sessions (logout + admin 15-minute idle timeout).
 db.exec('CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id TEXT NOT NULL, identifier TEXT, created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, ended_at INTEGER, end_reason TEXT)');
 db.exec('CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id, ended_at)');
-addColumnIfMissing('workers', 'registered_by', 'TEXT'); // Site HR email when registered on HR's phone (assisted)
+addColumnIfMissing('workers', 'registered_by', 'TEXT'); // Team Lead email when registered on the Team Lead's phone (assisted)
 
 // BRD §10 registration screens: job list set by admin (screen 8), consent saved with
 // date/time/version (screen 4), live one-face check on the photo (screen 5), optional
@@ -223,7 +223,7 @@ addColumnIfMissing('workers', 'consent_at', 'INTEGER');
 addColumnIfMissing('workers', 'photo_check_note', 'TEXT');
 addColumnIfMissing('workers', 'face_check_status', 'TEXT'); // clear | review | skipped | blocked
 addColumnIfMissing('workers', 'bank_passbook_data_url', 'TEXT');
-// BRD §11 screen 9 (grey = off day) and screen 10 (missed punch "calls site HR").
+// BRD §11 screen 9 (grey = off day) and screen 10 (missed punch "calls Team Lead").
 addColumnIfMissing('locations', 'weekly_off', 'INTEGER'); // 0 = Sunday … 6 = Saturday; NULL = no weekly off
 addColumnIfMissing('hr_users', 'phone', 'TEXT');
 // Password login for the admin portal (replaces email OTP): scrypt hash, and a flag set

@@ -1,14 +1,14 @@
-// BRD §7 design rule 8: "Site HR can register a worker on their own phone with the
+// BRD §7 design rule 8: "Team Lead can register a worker on their own phone with the
 // worker present. The worker's face and OTP confirm it. Punching is always done by the
-// worker." (Proposal: "Worker with Site HR" registers in the app.)
+// worker." (Proposal: "Worker with Team Lead" registers in the app.)
 //
-// Flow: Site HR enters the worker's mobile → OTP goes to the WORKER's phone → the worker
+// Flow: Team Lead enters the worker's mobile → OTP goes to the WORKER's phone → the worker
 // reads it out → HR enters it → the server issues a short-lived *assisted* worker token,
-// and HR's phone runs the normal registration wizard with it (the live photo is the
+// and the Team Lead's phone runs the normal registration wizard with it (the live photo is the
 // worker's face, captured there and then). That token:
 //  - only exists because the worker's own OTP was entered (HR can't register alone),
 //  - can never punch or bind a phone (punches.js refuses it),
-//  - pins the worker to the Site HR's own location,
+//  - pins the worker to the Team Lead's own location,
 //  - idles out after 15 minutes like an admin session, and is fully audited, with HR
 //    recorded as workers.registered_by.
 const express = require('express');
@@ -58,7 +58,7 @@ router.post('/otp/verify', requirePermission('workers.register_assisted'), (req,
   }
   db.prepare('UPDATE workers SET registered_by = ?, location_id = ? WHERE id = ?').run(req.user.email, req.user.location_id, w.id);
 
-  const sid = startSession('assisted', w.id, mobile, `Site HR ${req.user.email} started registering worker ${mobile} (worker OTP confirmed)`);
+  const sid = startSession('assisted', w.id, mobile, `Team Lead ${req.user.email} started registering worker ${mobile} (worker OTP confirmed)`);
   const token = issueToken({ sub: w.id, role: 'worker', mobile, sid, assistedBy: req.user.id, assistedByEmail: req.user.email, assistedLocationId: req.user.location_id }, '2h');
   res.json({ token, worker: db.prepare('SELECT * FROM workers WHERE id = ?').get(w.id) });
 });
