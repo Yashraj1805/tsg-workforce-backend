@@ -3,7 +3,6 @@ const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { workerScopeSql, ROLE_SCOPE } = require('../rbac');
-const setu = require('../services/kycProvider'); // Meon (live) or Setu, same interface
 const time = require('../services/time');
 const { namesMatch } = require('../services/nameMatch');
 const { checkDocument, checkFace, checkRegistrationPhoto } = require('../services/identityChecks');
@@ -159,11 +158,6 @@ router.post('/me/submit', requireAuth('worker'), async (req, res) => {
   if (!w.aadhaar_verified || !w.pan_verified) {
     return res.status(400).json({ error: 'Aadhaar and PAN must both be verified before submitting for HR approval' });
   }
-  // R04: documents captured by camera. Only enforced once real KYC is configured — the
-  // dev KYC skip (kyc.js /skip-dev) exists precisely because there's nothing to scan yet.
-  if (setu.isConfigured() && (!w.aadhaar_qr_at || !w.pan_photo_data_url)) {
-    return res.status(400).json({ error: 'Scan the Aadhaar QR and take a photo of the PAN card before submitting (R04)' });
-  }
   // R05, re-checked at submit: the profile name can still be edited after KYC, so the
   // match done at verification time alone isn't enough.
   for (const [doc, docName] of [['Aadhaar', w.aadhaar_name], ['PAN', w.pan_name]]) {
@@ -180,7 +174,7 @@ router.post('/me/submit', requireAuth('worker'), async (req, res) => {
     return res.status(400).json({ error: 'Complete your profile (name, vendor, site) before submitting' });
   }
   if (!w.job_id) return res.status(400).json({ error: 'Choose your job before submitting' });
-  if (!w.photo_data_url) return res.status(400).json({ error: 'Take your live photo before submitting' });
+  if (!w.photo_data_url) return res.status(400).json({ error: 'No photo on file yet — complete Aadhaar verification through DigiLocker first, that\'s where the photo comes from' });
   if (w.consent_version !== CONSENT.version) return res.status(400).json({ error: 'Read and accept the consent before submitting', consentVersion: CONSENT.version });
   // R06 / blacklist, re-checked at submit: documents may have been registered by
   // someone else since they were verified, and the face can only be checked now that

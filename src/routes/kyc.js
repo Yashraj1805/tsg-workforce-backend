@@ -79,6 +79,16 @@ router.get('/digilocker/:id/complete', requireAuth('worker'), async (req, res) =
     const result = await setu.fetchDigilocker(reqRow);
     if (result.status !== 'complete') return res.status(409).json({ error: 'DigiLocker verification is not finished yet - complete it in the browser, then tap again', pending: true });
 
+    // 2026-10-15: seen live with masked/photo/address all empty while status still came
+    // back 'complete' - the provider's field names for this response apparently don't
+    // all match what meonClient.js expects. Logging the raw shape here (never the
+    // worker's own PII beyond what's already in this request) so the next real
+    // completion shows exactly what to fix, and failing loudly instead of silently
+    // marking a worker verified with no real Aadhaar data behind it.
+    if (!result.aadhaar.maskedNumber) {
+      console.error('[kyc] DigiLocker complete() but no Aadhaar number extracted — raw response:', JSON.stringify(result.raw || result).slice(0, 2000));
+      return res.status(502).json({ error: 'DigiLocker returned incomplete data — try again, or ask HR to check the server log if this keeps happening' });
+    }
     const masked = result.aadhaar.maskedNumber;
     const last4 = String(masked || '').replace(/\D/g, '').slice(-4);
     const key = aadhaarKey(last4, result.aadhaar.dateOfBirth);
