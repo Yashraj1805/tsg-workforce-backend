@@ -25,6 +25,10 @@ async function fetchDigilocker(reqRow) {
     if (r.pan && r.pan.masked) {
       try { const p = await meon.fetchPanDetail(reqRow.client_token, reqRow.id); if (p.status === 'complete' && p.number && !/\*/.test(p.number)) r.pan = { number: p.number, name: p.name || r.pan.name, masked: false }; } catch (e) { /* keep masked PAN */ }
     }
+    // Meon's photoUrl points at their own server — punch-in face-match (geminiClient.js)
+    // needs a data: URL like every other photo in this app, so it's converted once here
+    // rather than re-fetched on every punch.
+    if (r.aadhaar && r.aadhaar.photoUrl) r.aadhaar.photoUrl = await meon.fetchImageAsDataUrl(r.aadhaar.photoUrl);
     return r;
   }
   const r = await setu.fetchDigilockerAadhaar(reqRow.id);

@@ -115,10 +115,15 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   }
 
   // Automated face-match (Gemini vision judgement — not a certified biometric API; see
-  // geminiClient.js). Only runs if a key is configured and the worker has a registration
-  // photo to compare against. An error in the check itself (timeout, bad key, API
-  // outage) does NOT block a legitimate worker — it's logged on the punch record for
-  // HR to see, not treated as a fraud signal.
+  // geminiClient.js). Compares against the Aadhaar photo (DigiLocker), not the
+  // registration selfie — the Aadhaar photo is government-sourced, so this is a
+  // stronger identity check than trusting the worker's own uploaded photo (2026-10-15,
+  // Harpreet). A worker who verified Aadhaar via QR scan instead of DigiLocker has no
+  // aadhaar_photo_url, so the check is skipped for them the same way a missing
+  // registration photo used to skip it — not blocked, just unchecked. Only runs if a
+  // key is configured and the worker has an Aadhaar photo to compare against. An error
+  // in the check itself (timeout, bad key, API outage) does NOT block a legitimate
+  // worker — it's logged on the punch record for HR to see, not treated as a fraud signal.
   //
   // A single vision-model call is noisy enough on its own (confirmed live: the same
   // real worker got a clean match on punch-in and a false mismatch on punch-out a few
@@ -131,24 +136,24 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   if (opts.kiosk) {
     // R20 gate tablet: no personal phone to bind, so the face is the only proof of who is
     // punching — it must positively match, and if it can't be checked the punch is refused.
-    if (!gemini.isConfigured() || !w.photo_data_url) return { ok: false, status: 503, body: { error: 'Face check is not available on the gate tablet right now — punch on your phone or ask Team Lead' } };
-    const r = await gemini.compareFaces(w.photo_data_url, selfieDataUrl);
+    if (!gemini.isConfigured() || !w.aadhaar_photo_url) return { ok: false, status: 503, body: { error: 'Face check is not available on the gate tablet right now — punch on your phone or ask Team Lead' } };
+    const r = await gemini.compareFaces(w.aadhaar_photo_url, selfieDataUrl);
     if (!r.ok) return { ok: false, status: 503, body: { error: 'Face check failed — try again' } };
     const kNote = `[gate tablet ${opts.kiosk.name}] samePerson=${r.samePerson} confidence=${r.confidence} spoofSuspected=${r.spoofSuspected}: ${r.reason}`;
     if (r.spoofSuspected) return block('spoof_suspected', 422, 'This looks like a photo of a photo or a screen — look at the camera', kNote, distanceM);
     if (!r.samePerson || r.confidence < 0.75) return block('face_mismatch', 422, 'Face did not match the selected worker', kNote, distanceM);
     faceMatchNote = kNote;
     faceBorderline = r.confidence < 0.9;
-  } else if (gemini.isConfigured() && w.photo_data_url) {
-    const first = await gemini.compareFaces(w.photo_data_url, selfieDataUrl);
+  } else if (gemini.isConfigured() && w.aadhaar_photo_url) {
+    const first = await gemini.compareFaces(w.aadhaar_photo_url, selfieDataUrl);
     if (first.ok) {
       const firstNote = `samePerson=${first.samePerson} confidence=${first.confidence} spoofSuspected=${first.spoofSuspected}: ${first.reason}`;
       const mismatch = !first.samePerson && first.confidence >= 0.75;
       if (mismatch || first.spoofSuspected) {
-        const second = await gemini.compareFaces(w.photo_data_url, selfieDataUrl);
+        const second = await gemini.compareFaces(w.aadhaar_photo_url, selfieDataUrl);
         const secondNote = second.ok ? `samePerson=${second.samePerson} confidence=${second.confidence} spoofSuspected=${second.spoofSuspected}: ${second.reason}` : `failed: ${second.error}`;
         if (second.ok && mismatch && !second.samePerson && second.confidence >= 0.75) {
-          return block('face_mismatch', 422, `Selfie doesn't appear to match the registered photo (${second.reason})`, `[check 1] ${firstNote} | [check 2 confirmed] ${secondNote}`, distanceM);
+          return block('face_mismatch', 422, `Selfie doesn't appear to match your Aadhaar photo (${second.reason})`, `[check 1] ${firstNote} | [check 2 confirmed] ${secondNote}`, distanceM);
         }
         if (second.ok && first.spoofSuspected && second.spoofSuspected) {
           return block('spoof_suspected', 422, 'This looks like a photo of a photo or a screen — take a live selfie', `[check 1] ${firstNote} | [check 2 confirmed spoof] ${secondNote}`, distanceM);

@@ -188,4 +188,25 @@ async function fetchPanDetail(clientToken, state) {
   return { status: 'complete', number: number ? number.toUpperCase() : null, name, dateOfBirth: isoDob(pick(d, 'dob')), raw: d };
 }
 
-module.exports = { vahanVerify, vahanConfigured, normaliseRegNo, REG_NO_RE, digilockerConfigured, getAccessToken, createDigilockerLink, fetchDigilockerData, fetchPanDetail, isoDob };
+// The Aadhaar photo Meon returns is a URL to their own server, not inline image data —
+// but the punch-in face-match (geminiClient.js) needs a data: URL like every other photo
+// in this app. Fetched and converted once, right when DigiLocker verification completes
+// (routes/kyc.js), and stored as workers.aadhaar_photo_url — not re-fetched on every
+// punch. Not yet confirmed live whether this URL needs its own auth beyond being
+// reachable; if it 403s, the face-match note will say so (see routes/kyc.js) rather than
+// failing silently.
+async function fetchImageAsDataUrl(url) {
+  if (!url) return null;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const mimeType = (r.headers.get('content-type') || 'image/jpeg').split(';')[0];
+    const buf = Buffer.from(await r.arrayBuffer());
+    return `data:${mimeType};base64,${buf.toString('base64')}`;
+  } catch (e) {
+    console.error('[meon] Aadhaar photo fetch failed', e.message);
+    return null;
+  }
+}
+
+module.exports = { vahanVerify, vahanConfigured, normaliseRegNo, REG_NO_RE, digilockerConfigured, getAccessToken, createDigilockerLink, fetchDigilockerData, fetchPanDetail, isoDob, fetchImageAsDataUrl };
