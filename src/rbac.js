@@ -61,7 +61,8 @@ const PERMISSIONS = {
   // worker ever opens the app; the worker then only has to log in and clear KYC — never
   // self-register from scratch. Punch-in still waits on approval (Aadhaar+PAN verified),
   // same gate as every other path — this only skips the initial blank-form step.
-  'workers.create_direct': ['site_hr', 'central_hr'],
+  // system_admin included so one bulk-import run (masters + people) needs only one login.
+  'workers.create_direct': ['site_hr', 'central_hr', 'system_admin'],
   // Proposal: "No HR approval, no entry. Security at the gate checks the portal."
   'workers.gatecheck':     ['security', 'site_hr', 'central_hr', 'location_head'],
   // R20 gate tablets: set up / pair / retire a site's kiosk.
