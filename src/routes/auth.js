@@ -52,11 +52,17 @@ router.post('/worker/otp/verify', (req, res) => {
 // first System Admin, which comes from ADMIN_BOOTSTRAP_EMAILS + ADMIN_BOOTSTRAP_PASSWORD
 // so there is someone who can create everyone else.
 const bootstrapAdmins = (process.env.ADMIN_BOOTSTRAP_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+// A forgotten password normally gets reset by another System Admin (Users screen). The
+// bootstrap account has no one above it to ask, so ADMIN_FORCE_RESET_EMAIL (comma-separated)
+// names specific emails that get force-reset to ADMIN_BOOTSTRAP_PASSWORD even if they
+// already have a password set — meant to be set, used once, then unset again, since it
+// would otherwise clobber any password the person chooses on every future restart.
+const forceResetEmails = (process.env.ADMIN_FORCE_RESET_EMAIL || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 (function bootstrapSystemAdmins() {
   const pw = process.env.ADMIN_BOOTSTRAP_PASSWORD || '';
   for (const email of bootstrapAdmins) {
     const existing = db.prepare('SELECT * FROM hr_users WHERE lower(email) = lower(?)').get(email);
-    if (existing && existing.password_hash) continue; // already set up — never overwrite a chosen password
+    if (existing && existing.password_hash && !forceResetEmails.includes(email.toLowerCase())) continue; // already set up — never overwrite a chosen password
     if (!pw) { console.warn(`[auth] ${email} is in ADMIN_BOOTSTRAP_EMAILS but ADMIN_BOOTSTRAP_PASSWORD is not set — they cannot sign in until it is`); continue; }
     const hash = hashPassword(pw);
     if (existing) {
