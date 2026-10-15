@@ -167,7 +167,9 @@ async function fetchDigilockerData(clientToken, state) {
     gender: pick(d, 'gender'),
     fatherName: pick(d, 'fathername'),
     address,
-    photoUrl: pick(d, 'adharimg') || pick(d, 'aadhar_img_filename'),
+    // aadhar_img_filename ("Photo.jpg") is the cropped face; adharimg ("AADHAR_IMAGE.jpg")
+    // is the full e-Aadhaar document render — confirmed live 2026-10-15, keep this order.
+    photoUrl: pick(d, 'aadhar_img_filename') || pick(d, 'adharimg'),
     xmlUrl: pick(d, 'aadhar_xml'),
     fetchedAt: pick(d, 'date_time'),
   };
