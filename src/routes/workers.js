@@ -18,7 +18,7 @@ const { makeThumb } = require('../services/thumbs');
 // Lists: the 192 px thumbnail stands in for the photo, identity-document images and the
 // Aadhaar key never go out, PAN is masked. Detail: full photo; the PAN card / passbook
 // images and full PAN only for roles that approve registrations (they review them).
-const KYC_IMAGE_COLS = ['pan_photo_data_url', 'bank_passbook_data_url'];
+const KYC_IMAGE_COLS = ['pan_photo_data_url', 'bank_passbook_data_url', 'reference_photo_url'];
 const SECRET_COLS = ['aadhaar_qr_signature', 'aadhaar_key', 'device_id'];
 const maskPan = (p) => (p && /^[A-Z]{5}\d{4}[A-Z]$/i.test(p)) ? p.slice(0, 2) + 'XXX' + 'XXXX' + p.slice(-1) : p ? 'XXXXXXXXXX' : p;
 function publicWorker(w, user, { detail = false } = {}) {
@@ -363,6 +363,25 @@ router.post('/:id/approve', requirePermission('workers.approve'), (req, res) => 
     .run(mgr.name, mgr.email, w.id);
   addAudit(req.auth.email, 'approve_registration', `Approved ${w.name} (${w.id}), reporting manager ${mgr.name} <${mgr.email}>${faceReviewNote ? `; face reviewed by HR: ${faceReviewNote}` : ''}`);
   notifyWorker(w, 'TSG Workforce: your registration is approved. You can now punch in at your site.');
+  res.json(getWorker(w.id));
+});
+
+// HR-confirmed reference photo for punch-in face match (see db.js comment) — for when the
+// Aadhaar photo is too old to match the worker's current face, which a photo check alone
+// can't tell apart from fraud. HR picks one of the worker's own blocked-punch selfies
+// (reviewed on the Exceptions screen), confirms it's genuinely them, and that selfie
+// replaces the Aadhaar photo for every future face-match comparison.
+router.post('/:id/reference-photo', requirePermission('workers.approve'), (req, res) => {
+  const w = getScopedWorker(req.user, req.params.id);
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  const { punchId } = req.body || {};
+  if (!punchId) return res.status(400).json({ error: 'punchId is required' });
+  const punch = db.prepare('SELECT selfie_data_url FROM punches WHERE id = ? AND worker_id = ?').get(punchId, w.id);
+  if (!punch || !punch.selfie_data_url) return res.status(404).json({ error: 'That punch has no selfie on file' });
+  db.prepare('UPDATE workers SET reference_photo_url = ?, reference_photo_set_by = ?, reference_photo_set_at = ? WHERE id = ?')
+    .run(punch.selfie_data_url, req.auth.email, Date.now(), w.id);
+  logEvent(w.id, req.user, 'reference_photo_confirmed', `Confirmed by ${req.auth.email} from punch ${punchId}`, null);
+  addAudit(req.auth.email, 'reference_photo_confirmed', `${w.name} (${w.id}): reference photo set from punch ${punchId} — future punches compare against this, not the Aadhaar photo`);
   res.json(getWorker(w.id));
 });
 

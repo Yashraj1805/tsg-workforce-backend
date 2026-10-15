@@ -259,6 +259,14 @@ addColumnIfMissing('vendors', 'contact_aadhaar_name', 'TEXT');
 addColumnIfMissing('vendors', 'contact_aadhaar_qr_format', 'TEXT');
 addColumnIfMissing('vendors', 'contact_aadhaar_qr_signature', 'TEXT');
 addColumnIfMissing('vendors', 'contact_aadhaar_qr_at', 'INTEGER');
+// HR-confirmed reference photo for punch-in face match, used instead of aadhaar_photo_url
+// once set. Covers an Aadhaar photo that's genuinely too old to match a worker's current
+// face: HR reviews a blocked punch's selfie against the worker's documents/in-person
+// knowledge and confirms it's the same person, and that selfie becomes the new reference
+// (2026-10-15, Harpreet: "face same person k h, addhar pr bachpan ki h aur yaha jawani ki h").
+addColumnIfMissing('workers', 'reference_photo_url', 'TEXT');
+addColumnIfMissing('workers', 'reference_photo_set_by', 'TEXT');
+addColumnIfMissing('workers', 'reference_photo_set_at', 'INTEGER');
 
 function addAudit(user, action, detail) {
   db.prepare('INSERT INTO audit_log (id, ts, user, action, detail) VALUES (?,?,?,?,?)')
