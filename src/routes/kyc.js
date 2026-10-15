@@ -8,6 +8,7 @@ const { parseAadhaarQr, aadhaarKey, careOfName } = require('../services/aadhaarQ
 const { namesMatch } = require('../services/nameMatch');
 const { checkDocument } = require('../services/identityChecks');
 const { checkImages } = require('../services/images');
+const { makeThumb } = require('../services/thumbs');
 
 // DPDP: no identity document is read or sent to a verification provider before the
 // worker has accepted the consent text (wizard step 1). Any accepted version counts
@@ -105,6 +106,16 @@ router.get('/digilocker/:id/complete', requireAuth('worker'), async (req, res) =
         result.aadhaar.gender ? result.aadhaar.gender.toLowerCase() : null, result.aadhaar.fatherName || null, result.aadhaar.address || null, result.aadhaar.photoUrl || null, req.auth.sub);
     db.prepare("UPDATE digilocker_requests SET status = 'complete' WHERE id = ?").run(req.params.id);
     addAudit(req.auth.mobile, 'aadhaar_verified', `Aadhaar verified via DigiLocker (${reqRow.provider || 'setu'}), masked ${masked}`);
+
+    // 2026-10-15 (Harpreet): there's no separate live-selfie step anymore — the Aadhaar
+    // photo IS the worker's photo everywhere (HR screens, gate-check, duplicate-face
+    // detection, punch-in match). COALESCE so a photo from some other path is never
+    // overwritten.
+    if (result.aadhaar.photoUrl) {
+      const thumb = await makeThumb(result.aadhaar.photoUrl).catch(() => null);
+      db.prepare('UPDATE workers SET photo_data_url = COALESCE(photo_data_url, ?), photo_thumb = COALESCE(photo_thumb, ?) WHERE id = ?')
+        .run(result.aadhaar.photoUrl, thumb || 'none', req.auth.sub);
+    }
 
     // PAN from the same DigiLocker consent (Meon returns it alongside Aadhaar). A full,
     // unmasked number is verified on the spot - subject to the same blacklist/duplicate

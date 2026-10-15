@@ -13,9 +13,20 @@ function publicUser(u) { if (!u) return u; const { password_hash, ...rest } = u;
 const router = express.Router();
 
 // ---- Worker: mobile + OTP login (BRD R03) ----
+// Self-signup is restricted (2026-10-15, Harpreet): with no WhatsApp/SMS gateway live
+// yet, the OTP is echoed back in the API response (devOtp) rather than actually
+// delivered, so a brand-new mobile number could otherwise get a login on nothing more
+// than a guess. Only a mobile a Team Lead/HR already created (Add worker, or the
+// manpower import) can request an OTP now - remove this block the day real OTP
+// delivery (WhatsApp Cloud API or an SMS gateway) is configured, restoring open
+// self-registration for genuinely new workers.
 router.post('/worker/otp/request', async (req, res) => {
   const { mobile, channel } = req.body || {};
   if (!/^\d{10}$/.test(mobile || '')) return res.status(400).json({ error: 'Valid 10-digit mobile number required' });
+  if (!db.prepare('SELECT 1 FROM workers WHERE mobile = ?').get(mobile)) {
+    auditFailedLogin(mobile, 'worker', 'no account for this number — self-signup restricted (no OTP delivery configured yet)');
+    return res.status(404).json({ error: 'This mobile number is not registered yet. Ask your Team Lead to add you first.' });
+  }
   const result = await generateOtp(mobile, 'worker_login', { channel: channel === 'sms' ? 'sms' : undefined });
   if (result.error) return res.status(429).json(result); // resend wait / 15-min lock
   res.json(result);
@@ -27,23 +38,15 @@ router.post('/worker/otp/verify', (req, res) => {
   const result = verifyOtp(mobile, 'worker_login', otp);
   if (!result.ok) { auditFailedLogin(mobile, 'worker', result.error); return res.status(400).json({ error: result.error }); }
 
-  let worker = db.prepare('SELECT * FROM workers WHERE mobile = ?').get(mobile);
-  let isNew = false;
-  if (!worker) {
-    const id = crypto.randomUUID();
-    db.prepare('INSERT INTO workers (id, mobile, status, kyc_status, created_at) VALUES (?,?,?,?,?)')
-      .run(id, mobile, 'draft', 'pending', Date.now());
-    worker = db.prepare('SELECT * FROM workers WHERE id = ?').get(id);
-    isNew = true;
-    addAudit(mobile, 'worker_first_login', 'New worker record created on first OTP login');
-  }
+  const worker = db.prepare('SELECT * FROM workers WHERE mobile = ?').get(mobile);
+  if (!worker) { auditFailedLogin(mobile, 'worker', 'no account for this number — self-signup restricted'); return res.status(404).json({ error: 'This mobile number is not registered yet. Ask your Team Lead to add you first.' }); }
   if (worker.blacklisted) { auditFailedLogin(mobile, 'worker', 'blacklisted'); return res.status(403).json({ error: 'This Aadhaar/mobile is blacklisted and cannot register again' }); }
 
   const sid = startSession('worker', worker.id, mobile, `Worker ${worker.name || '(new)'} signed in (status ${worker.status})`);
   // 30 days: a 12 h token expired mid-shift and killed the punch-out (and, with it, any
   // offline punch waiting to sync). Revocation is server-side anyway (sessions table).
   const token = issueToken({ sub: worker.id, role: 'worker', mobile, sid }, '30d');
-  res.json({ token, worker, isNew });
+  res.json({ token, worker, isNew: false });
 });
 
 // ---- HR/admin: company email + own password (BRD R18) ----
