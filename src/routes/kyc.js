@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('node:crypto');
 const { db, addAudit } = require('../db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePermission } = require('../middleware/auth');
 const setu = require('../services/kycProvider'); // Meon (live) or Setu, same interface
 const gemini = require('../services/geminiClient');
 const { parseAadhaarQr, aadhaarKey, careOfName } = require('../services/aadhaarQr');
@@ -298,6 +298,21 @@ router.post('/skip-dev', requireAuth('worker'), (req, res) => {
     WHERE id = ?`).run(req.auth.sub);
   addAudit(req.auth.mobile, 'kyc_dev_skip', 'Aadhaar + PAN verification skipped — dev mode, no Setu credentials configured yet');
   res.json({ worker: db.prepare('SELECT * FROM workers WHERE id = ?').get(req.auth.sub) });
+});
+
+// Temporary diagnostic (2026-10-15): re-fetches the same completed DigiLocker session's
+// raw payload without a fresh OTP, so the real Meon field names can be read off once and
+// the photo field fixed (the full e-Aadhaar document ended up as the profile photo
+// instead of just the face - meonClient.js's photoUrl field guess was wrong). Remove once
+// that's fixed and confirmed.
+router.get('/debug-raw/:workerId', requirePermission('users.manage'), async (req, res) => {
+  const meon = require('../services/meonClient');
+  const reqRow = db.prepare('SELECT * FROM digilocker_requests WHERE worker_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.workerId);
+  if (!reqRow) return res.status(404).json({ error: 'No DigiLocker request for this worker' });
+  try {
+    const r = await meon.fetchDigilockerData(reqRow.client_token, reqRow.id);
+    res.json(r);
+  } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
 module.exports = router;
