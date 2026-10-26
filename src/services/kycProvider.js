@@ -41,9 +41,9 @@ async function fetchDigilocker(reqRow) {
 // Standalone PAN verification (vendor contact / manual PAN). Meon's PAN API spec is not
 // published in the portal yet, so only Setu can answer this today.
 async function verifyPan(pan, reason) {
-  if (setu.isConfigured()) return setu.verifyPan(pan, reason);
+  if (setu.panApiConfiguredDirect()) return setu.verifyPan(pan, reason);
   const e = new Error('Standalone PAN verification is not available yet — PAN is verified through DigiLocker during registration'); e.code = 'PAN_API_UNAVAILABLE'; throw e;
 }
-const panApiConfigured = () => setu.isConfigured();
+const panApiConfigured = () => setu.panApiConfiguredDirect();
 
 module.exports = { provider, isConfigured, createDigilockerRequest, fetchDigilocker, verifyPan, panApiConfigured };
