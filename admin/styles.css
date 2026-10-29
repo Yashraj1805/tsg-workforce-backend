@@ -1,4 +1,8 @@
 :root {
+  /* Tells the browser this page handles its own theming - without this, some browsers'
+     auto-dark-mode "enhance website colors" heuristic can mis-recolor inherited-color
+     text (e.g. table cells turning blue while explicitly-styled headings don't). */
+  color-scheme: light;
   --primary: #4152d6; --primary-dark: #2f3eb0; --primary-tint: #eef0ff;
   --accent: #19a974; --accent-tint: #e6f7ef; --accent-dark: #0e7a4f;
   --warn: #c9752f; --warn-tint: #fdeee0;
@@ -68,7 +72,7 @@ input, select, textarea { font: inherit; }
 .table-wrap { overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 table.data th { text-align: left; padding: 9px 10px; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1.5px solid var(--border); white-space: nowrap; }
-table.data td { padding: 10px 10px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+table.data td { padding: 10px 10px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; color: var(--text); }
 table.data tr:hover td { background: var(--primary-tint); }
 table.data tr.clickable { cursor: pointer; }
 .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
