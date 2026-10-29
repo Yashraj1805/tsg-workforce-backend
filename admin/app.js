@@ -359,48 +359,68 @@ async function openWorkerDrawer(id, onChange) {
       catch (e) { toast(e.message, 'error'); }
     };
     const approveBtn = overlay.querySelector('#actApprove');
-    if (approveBtn) approveBtn.onclick = async () => {
-      const name = prompt('Reporting manager name:', w.reporting_manager_name || ''); if (name == null) return;
-      const email = prompt('Reporting manager email:', w.reporting_manager_email || ''); if (email == null) return;
+    if (approveBtn) approveBtn.onclick = () => openFormDialog('Approve ' + (w.name || 'worker'), [
+      { id: 'name', label: 'Reporting manager name', type: 'text', value: w.reporting_manager_name, required: true },
+      { id: 'email', label: 'Reporting manager email', type: 'text', value: w.reporting_manager_email, required: true },
+    ], async (v) => {
       try {
-        await api(`/workers/${id}/approve`, { method: 'POST', body: { reportingManagerName: name, reportingManagerEmail: email } });
+        await api(`/workers/${id}/approve`, { method: 'POST', body: { reportingManagerName: v.name, reportingManagerEmail: v.email } });
         toast('Approved', 'success'); overlay.remove(); onChange && onChange();
       } catch (e) {
-        if (/face review/i.test(e.message)) {
-          const note = prompt(e.message + '\n\nEnter a note confirming you compared the photos:');
-          if (note) {
-            try { await api(`/workers/${id}/approve`, { method: 'POST', body: { reportingManagerName: name, reportingManagerEmail: email, faceReviewNote: note } }); toast('Approved', 'success'); overlay.remove(); onChange && onChange(); }
-            catch (e2) { toast(e2.message, 'error'); }
-          }
-        } else toast(e.message, 'error');
+        if (!/face review/i.test(e.message)) throw e;
+        openFormDialog(e.message, [{ id: 'note', label: 'Note confirming you compared the photos', type: 'text', required: true }], async (v2) => {
+          await api(`/workers/${id}/approve`, { method: 'POST', body: { reportingManagerName: v.name, reportingManagerEmail: v.email, faceReviewNote: v2.note } });
+          toast('Approved', 'success'); overlay.remove(); onChange && onChange();
+        }, 'Approve');
       }
-    };
-    const sb = overlay.querySelector('#actSendBack'); if (sb) sb.onclick = () => { const reason = prompt('Reason to send back to the worker:'); if (reason) act('send-back', { reason }); };
-    const rj = overlay.querySelector('#actReject'); if (rj) rj.onclick = () => { const reason = prompt('Reason for rejecting (the worker is told this):'); if (reason) act('reject', { reason }); };
-    const ex = overlay.querySelector('#actExit'); if (ex) ex.onclick = () => {
-      const reason = prompt('Reason for exit:'); if (!reason) return;
+    }, 'Approve');
+    const sb = overlay.querySelector('#actSendBack'); if (sb) sb.onclick = () => openReasonPrompt('Reason to send back to the worker', (reason) => act('send-back', { reason }));
+    const rj = overlay.querySelector('#actReject'); if (rj) rj.onclick = () => openReasonPrompt('Reason for rejecting (the worker is told this)', (reason) => act('reject', { reason }));
+    const ex = overlay.querySelector('#actExit'); if (ex) ex.onclick = () => openFormDialog(`Mark ${w.name || 'worker'} as exited`, [{ id: 'reason', label: 'Reason', type: 'text', required: true }], async (v) => {
       if (!confirm(`Mark ${w.name} as exited today?`)) return;
-      act('exit', { exitDate: new Date().toISOString().slice(0, 10), reason });
-    };
-    const rd = overlay.querySelector('#actResetDevice'); if (rd) rd.onclick = () => {
-      const reason = prompt('Reason for resetting this worker\'s bound device (lets them bind a new phone):'); if (!reason) return;
-      act('reset-device', { reason });
-    };
-    const tr = overlay.querySelector('#actTransfer'); if (tr) tr.onclick = async () => {
-      const [locations, vendors] = await Promise.all([api('/locations').catch(() => []), api('/vendors').catch(() => [])]);
-      const locName = prompt(`New site (leave blank to keep "${w.location ? w.location.name : 'current'}"):\n\nOptions: ${locations.map(l => l.name).join(', ')}`, '');
-      const venName = prompt(`New vendor (leave blank to keep "${w.vendor ? w.vendor.name : 'current'}"):\n\nOptions: ${vendors.map(v => v.name).join(', ')}`, '');
-      const reason = prompt('Reason for transfer:'); if (!reason) return;
-      const loc = locName ? locations.find(l => l.name.toLowerCase() === locName.trim().toLowerCase()) : null;
-      const ven = venName ? vendors.find(v => v.name.toLowerCase() === venName.trim().toLowerCase()) : null;
-      if (locName && !loc) { toast(`No site matches "${locName}"`, 'error'); return; }
-      if (venName && !ven) { toast(`No vendor matches "${venName}"`, 'error'); return; }
-      act('transfer', { locationId: loc ? loc.id : undefined, vendorId: ven ? ven.id : undefined, reason });
-    };
+      await act('exit', { exitDate: new Date().toISOString().slice(0, 10), reason: v.reason });
+    }, 'Mark exited');
+    const rd = overlay.querySelector('#actResetDevice'); if (rd) rd.onclick = () => openReasonPrompt('Reason for resetting this worker\'s bound device (lets them bind a new phone)', (reason) => act('reset-device', { reason }));
+    const tr = overlay.querySelector('#actTransfer'); if (tr) tr.onclick = () => openTransferForm(id, w, () => { overlay.remove(); onChange && onChange(); });
   } catch (e) {
     overlay.querySelector('.drawer').innerHTML = `<button class="close">&times;</button><div class="error-box">${esc(e.message)}</div>`;
     overlay.querySelector('.close').onclick = () => overlay.remove();
   }
+}
+
+async function openTransferForm(workerId, worker, onDone) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  overlay.innerHTML = `<div class="drawer"><div class="empty">Loading…</div></div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const [locations, vendors] = await Promise.all([api('/locations').catch(() => []), api('/vendors').catch(() => [])]);
+  const curLoc = worker.location ? worker.location.id : '';
+  const curVen = worker.vendor ? worker.vendor.id : '';
+  overlay.querySelector('.drawer').innerHTML = `
+    <button class="close">&times;</button>
+    <h2>Transfer ${esc(worker.name || 'worker')}</h2>
+    <form id="trForm">
+      <div class="field"><label>Site</label>
+        <select id="tr_location">${locations.map(l => `<option value="${esc(l.id)}" ${l.id === curLoc ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Vendor</label>
+        <select id="tr_vendor">${vendors.map(v => `<option value="${esc(v.id)}" ${v.id === curVen ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Reason</label><input id="tr_reason" required /></div>
+      <button class="btn primary block" type="submit">Transfer</button>
+    </form>`;
+  overlay.querySelector('.close').onclick = () => overlay.remove();
+  document.getElementById('trForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const locationId = document.getElementById('tr_location').value;
+    const vendorId = document.getElementById('tr_vendor').value;
+    const reason = document.getElementById('tr_reason').value;
+    if (locationId === curLoc && vendorId === curVen) { toast('Pick a different site or vendor — nothing to change', 'error'); return; }
+    try {
+      await api(`/workers/${workerId}/transfer`, { method: 'POST', body: { locationId, vendorId, reason } });
+      toast('Transferred', 'success'); overlay.remove(); onDone && onDone();
+    } catch (err) { toast(err.message, 'error'); }
+  };
 }
 
 // ---- Regularisations (missed punch) ----
@@ -458,8 +478,9 @@ async function renderVendorBill(content) {
         lockBtn.textContent = data.locked ? 'Locked ✓ — unlock' : 'Lock month';
         lockBtn.onclick = async () => {
           try {
-            if (data.locked) { const reason = prompt('Reason to unlock:'); if (!reason) return; await api(`/reports/attendance-lock/${m}`, { method: 'DELETE', body: { reason } }); }
-            else { if (!confirm(`Lock attendance for ${m}? No more corrections after this.`)) return; await api('/reports/attendance-lock', { method: 'POST', body: { month: m } }); }
+            if (data.locked) { openReasonPrompt('Reason to unlock', async (reason) => { await api(`/reports/attendance-lock/${m}`, { method: 'DELETE', body: { reason } }); load(); }); return; }
+            if (!confirm(`Lock attendance for ${m}? No more corrections after this.`)) return;
+            await api('/reports/attendance-lock', { method: 'POST', body: { month: m } });
             load();
           } catch (e) { toast(e.message, 'error'); }
         };
@@ -470,11 +491,15 @@ async function renderVendorBill(content) {
         <td>${badge(r.status)}</td>
         ${canWrite ? `<td><button class="btn secondary small" data-v="${esc(r.vendorId)}">Edit</button></td>` : ''}
       </tr>`).join('') || emptyRow(7, 'No data for this month');
-      document.querySelectorAll('#billBody button[data-v]').forEach(b => b.onclick = async () => {
-        const invoiceDays = prompt('Invoice days:'); if (invoiceDays == null || invoiceDays === '') return;
-        const invoiceRef = prompt('Invoice ref (optional):') || '';
-        try { await api('/reports/vendor-invoices', { method: 'PUT', body: { vendorId: b.dataset.v, month: m, invoiceDays: Number(invoiceDays), invoiceRef } }); toast('Saved', 'success'); load(); }
-        catch (e) { toast(e.message, 'error'); }
+      document.querySelectorAll('#billBody button[data-v]').forEach(b => b.onclick = () => {
+        const row = data.rows.find(r => r.vendorId === b.dataset.v);
+        openFormDialog(`Vendor invoice — ${row ? row.vendorName : ''}`, [
+          { id: 'invoiceDays', label: 'Invoice days', type: 'number', value: row && row.invoiceDays, required: true },
+          { id: 'invoiceRef', label: 'Invoice ref (optional)', type: 'text', value: row && row.invoiceRef },
+        ], async (v) => {
+          await api('/reports/vendor-invoices', { method: 'PUT', body: { vendorId: b.dataset.v, month: m, invoiceDays: Number(v.invoiceDays), invoiceRef: v.invoiceRef } });
+          toast('Saved', 'success'); load();
+        }, 'Save');
       });
     } catch (e) { document.getElementById('billBody').innerHTML = emptyRow(7, e.message); }
   }
@@ -735,39 +760,104 @@ async function renderRequests(content) {
         try {
           if (act === 'accept') await api(`/worker-requests/${id}/accept`, { method: 'POST', body: {} });
           else if (act === 'complete') { if (!confirm('Carry out this request now?')) return; await api(`/worker-requests/${id}/complete`, { method: 'POST', body: {} }); }
-          else if (act === 'reject') { const reason = prompt('Reason for rejecting:'); if (!reason) return; await api(`/worker-requests/${id}/reject`, { method: 'POST', body: { reason } }); }
+          else if (act === 'reject') { openReasonPrompt('Reason for rejecting', async (reason) => { await api(`/worker-requests/${id}/reject`, { method: 'POST', body: { reason } }); toast('Updated', 'success'); load(); }); return; }
           toast('Updated', 'success'); load();
         } catch (e) { toast(e.message, 'error'); }
       });
     } catch (e) { document.getElementById('reqBody').innerHTML = emptyRow(7, e.message); }
   }
   const raiseBtn = document.getElementById('raiseBtn');
-  if (raiseBtn) raiseBtn.onclick = async () => {
-    const workers = await api('/workers?status=approved').catch(() => []);
-    const name = prompt(`Worker name (approved workers only):\n\n${workers.map(w => w.name).join(', ')}`);
-    if (!name) return;
-    const w = workers.find(x => (x.name || '').toLowerCase() === name.trim().toLowerCase());
-    if (!w) { toast('No approved worker matches that name', 'error'); return; }
-    const type = (prompt('Type: "transfer" or "exit"?', 'transfer') || '').trim().toLowerCase();
-    if (type !== 'transfer' && type !== 'exit') { toast('Must be "transfer" or "exit"', 'error'); return; }
-    const reason = prompt('Reason:'); if (!reason) return;
-    const body = { workerId: w.id, type, reason };
-    if (type === 'transfer') {
-      const [locations, vendors] = await Promise.all([api('/locations').catch(() => []), api('/vendors').catch(() => [])]);
-      const locName = prompt(`New site (blank to keep current):\n\n${locations.map(l => l.name).join(', ')}`, '');
-      const venName = prompt(`New vendor (blank to keep current):\n\n${vendors.map(v => v.name).join(', ')}`, '');
-      const loc = locName ? locations.find(l => l.name.toLowerCase() === locName.trim().toLowerCase()) : null;
-      const ven = venName ? vendors.find(v => v.name.toLowerCase() === venName.trim().toLowerCase()) : null;
-      if (loc) body.toLocationId = loc.id;
-      if (ven) body.toVendorId = ven.id;
-    } else {
-      body.exitDate = prompt('Exit date (YYYY-MM-DD):', new Date().toISOString().slice(0, 10)) || undefined;
-      body.blacklist = confirm('Flag for blacklisting (misconduct)?');
-    }
-    try { await api('/worker-requests', { method: 'POST', body }); toast('Request raised', 'success'); load(); }
-    catch (e) { toast(e.message, 'error'); }
-  };
+  if (raiseBtn) raiseBtn.onclick = () => openRaiseRequestForm(load);
   load();
+}
+
+// Generic small-form dialog, replacing window.prompt()/confirm() shortcuts with something
+// that actually matches the rest of the app (dropdowns for pick-one-of-these, not "type the
+// exact name" - 2026-10-29 feedback). `fields`: [{id, label, type: 'text'|'number'|'date'|
+// 'time'|'select'|'checkbox', value, options: [{value,label}], required, placeholder}].
+// onSubmit receives {id: value} and may throw/reject to show an error without closing.
+function openFormDialog(title, fields, onSubmit, submitLabel) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  const fieldHtml = fields.map(f => {
+    const id = `fd_${f.id}`;
+    if (f.type === 'select') return `<div class="field"><label>${esc(f.label)}</label><select id="${id}" ${f.required ? 'required' : ''}>${f.options.map(o => `<option value="${esc(o.value)}" ${o.value === f.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select></div>`;
+    if (f.type === 'checkbox') return `<div class="field"><label><input type="checkbox" id="${id}" ${f.value ? 'checked' : ''} style="width:auto;margin-right:6px" />${esc(f.label)}</label></div>`;
+    return `<div class="field"><label>${esc(f.label)}</label><input id="${id}" type="${f.type || 'text'}" value="${esc(f.value == null ? '' : f.value)}" ${f.required ? 'required' : ''} ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''} /></div>`;
+  }).join('');
+  overlay.innerHTML = `<div class="drawer"><button class="close">&times;</button>
+    <h2>${esc(title)}</h2>
+    <form id="fdForm">${fieldHtml}<div id="fdErr"></div><button class="btn primary block" type="submit">${esc(submitLabel || 'Submit')}</button></form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelector('.close').onclick = () => overlay.remove();
+  const first = overlay.querySelector('input, select'); if (first) first.focus();
+  document.getElementById('fdForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const values = {};
+    for (const f of fields) { const el = document.getElementById('fd_' + f.id); values[f.id] = f.type === 'checkbox' ? el.checked : el.value; }
+    try { await onSubmit(values); overlay.remove(); }
+    catch (err) { document.getElementById('fdErr').innerHTML = `<div class="error-box">${esc(err.message)}</div>`; }
+  };
+  return overlay;
+}
+
+// A single required-text-field dialog - thin wrapper over openFormDialog.
+function openReasonPrompt(label, onSubmit) {
+  openFormDialog(label, [{ id: 'reason', label: 'Reason', type: 'text', required: true }], (v) => onSubmit(v.reason), 'Submit');
+}
+
+async function openRaiseRequestForm(onDone) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  overlay.innerHTML = `<div class="drawer"><div class="empty">Loading…</div></div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const [workers, locations, vendors] = await Promise.all([
+    api('/workers?status=approved').catch(() => []), api('/locations').catch(() => []), api('/vendors').catch(() => []),
+  ]);
+  overlay.querySelector('.drawer').innerHTML = `
+    <button class="close">&times;</button>
+    <h2>Raise a transfer or exit request</h2>
+    <form id="rrForm">
+      <div class="field"><label>Worker</label>
+        <select id="rr_worker" required><option value="">Select…</option>${workers.map(w => `<option value="${esc(w.id)}">${esc(w.name)} — ${esc(w.mobile || '')}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Type</label>
+        <select id="rr_type"><option value="transfer">Transfer</option><option value="exit">Exit</option></select>
+      </div>
+      <div id="rr_transferFields">
+        <div class="field"><label>New site</label><select id="rr_location"><option value="">Keep current</option>${locations.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>New vendor</label><select id="rr_vendor"><option value="">Keep current</option>${vendors.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('')}</select></div>
+      </div>
+      <div id="rr_exitFields" style="display:none">
+        <div class="field"><label>Exit date</label><input type="date" id="rr_exitDate" value="${new Date().toISOString().slice(0, 10)}" /></div>
+        <div class="field"><label><input type="checkbox" id="rr_blacklist" style="width:auto;margin-right:6px" />Flag for blacklisting (misconduct)</label></div>
+      </div>
+      <div class="field"><label>Reason</label><input id="rr_reason" required /></div>
+      <button class="btn primary block" type="submit">Raise request</button>
+    </form>`;
+  overlay.querySelector('.close').onclick = () => overlay.remove();
+  const syncFields = () => {
+    const isTransfer = document.getElementById('rr_type').value === 'transfer';
+    document.getElementById('rr_transferFields').style.display = isTransfer ? '' : 'none';
+    document.getElementById('rr_exitFields').style.display = isTransfer ? 'none' : '';
+  };
+  document.getElementById('rr_type').onchange = syncFields; syncFields();
+  document.getElementById('rrForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const type = document.getElementById('rr_type').value;
+    const body = { workerId: document.getElementById('rr_worker').value, type, reason: document.getElementById('rr_reason').value };
+    if (type === 'transfer') {
+      const loc = document.getElementById('rr_location').value, ven = document.getElementById('rr_vendor').value;
+      if (loc) body.toLocationId = loc;
+      if (ven) body.toVendorId = ven;
+    } else {
+      body.exitDate = document.getElementById('rr_exitDate').value || undefined;
+      body.blacklist = document.getElementById('rr_blacklist').checked;
+    }
+    try { await api('/worker-requests', { method: 'POST', body }); toast('Request raised', 'success'); overlay.remove(); onDone && onDone(); }
+    catch (err) { toast(err.message, 'error'); }
+  };
 }
 
 // ---- Reports (Excel downloads with real filters) ----
@@ -1002,12 +1092,14 @@ async function renderKiosks(content) {
   }
   document.getElementById('addKiosk').onclick = async () => {
     const locations = await api('/locations').catch(() => []);
-    const name = prompt('Tablet name (e.g. "Narela Showroom Gate"):'); if (!name) return;
-    const locName = prompt(`Site:\n\n${locations.map(l => l.name).join(', ')}`); if (!locName) return;
-    const loc = locations.find(l => l.name.toLowerCase() === locName.trim().toLowerCase());
-    if (!loc) { toast('No site matches that name', 'error'); return; }
-    try { const r = await api('/kiosks', { method: 'POST', body: { name, locationId: loc.id } }); alert(`Pairing code: ${r.pairingCode}\n\nValid for ${r.pairingExpiresInHours} hours. Enter it on the tablet.`); load(); }
-    catch (e) { toast(e.message, 'error'); }
+    openFormDialog('Add gate tablet', [
+      { id: 'name', label: 'Tablet name', type: 'text', placeholder: 'e.g. Narela Showroom Gate', required: true },
+      { id: 'locationId', label: 'Site', type: 'select', options: locations.map(l => ({ value: l.id, label: l.name })), required: true },
+    ], async (v) => {
+      const r = await api('/kiosks', { method: 'POST', body: { name: v.name, locationId: v.locationId } });
+      alert(`Pairing code: ${r.pairingCode}\n\nValid for ${r.pairingExpiresInHours} hours. Enter it on the tablet.`);
+      load();
+    }, 'Create');
   };
   load();
 }
@@ -1026,7 +1118,7 @@ async function renderEmails(content) {
           <p class="muted" style="margin:0 0 10px">${esc(r.shows)} · to: ${esc(r.to)} · ${esc(r.schedule)} at ${esc(r.time)}</p>
           <div class="actions-row">
             <button class="btn secondary small" data-toggle="${esc(r.key)}" data-next="${r.enabled ? '0' : '1'}">${r.enabled ? 'Turn off' : 'Turn on'}</button>
-            <button class="btn secondary small" data-time="${esc(r.key)}">Change time</button>
+            <button class="btn secondary small" data-time="${esc(r.key)}" data-current="${esc(r.time)}">Change time</button>
             <button class="btn secondary small" data-send="${esc(r.key)}">Send now</button>
           </div>
         </div>`).join('')}`;
@@ -1034,10 +1126,10 @@ async function renderEmails(content) {
         try { await api(`/email-reports/${b.dataset.toggle}`, { method: 'PUT', body: { enabled: b.dataset.next === '1' } }); toast('Saved', 'success'); load(); }
         catch (e) { toast(e.message, 'error'); }
       });
-      document.querySelectorAll('#emBody button[data-time]').forEach(b => b.onclick = async () => {
-        const time = prompt('New time (24h, HH:MM):'); if (!time) return;
-        try { await api(`/email-reports/${b.dataset.time}`, { method: 'PUT', body: { time } }); toast('Saved', 'success'); load(); }
-        catch (e) { toast(e.message, 'error'); }
+      document.querySelectorAll('#emBody button[data-time]').forEach(b => b.onclick = () => {
+        openFormDialog('Change send time', [{ id: 'time', label: 'Time', type: 'time', value: b.dataset.current, required: true }], async (v) => {
+          await api(`/email-reports/${b.dataset.time}`, { method: 'PUT', body: { time: v.time } }); toast('Saved', 'success'); load();
+        }, 'Save');
       });
       document.querySelectorAll('#emBody button[data-send]').forEach(b => b.onclick = async () => {
         b.disabled = true; b.textContent = 'Sending…';
