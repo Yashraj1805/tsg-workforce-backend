@@ -4,6 +4,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const fs = require('node:fs');
+const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { db, DATA_DIR } = require('./db'); // initialise schema on boot
@@ -61,6 +62,14 @@ app.get('/health', (req, res) => {
   out.devBypass = process.env.NODE_ENV !== 'production' && process.env.DEV_BYPASS === '1';
   res.status(out.ok ? 200 : 503).json(out);
 });
+
+// ---- Admin Portal (HR / Finance / MIS / managers / System Admin): a plain static site,
+// not the Capacitor phone app — those roles are mostly laptop users, so they sign in here
+// (same /api/auth/hr/login the HR screens in the phone app already used) instead of on a
+// phone app built for workers. See admin/app.js.
+const ADMIN_DIR = path.join(__dirname, '../admin');
+app.use('/admin', express.static(ADMIN_DIR));
+app.get(/^\/admin\/.*/, (req, res) => res.sendFile(path.join(ADMIN_DIR, 'index.html')));
 
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/workers', require('./routes/workers'));
