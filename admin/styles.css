@@ -44,6 +44,8 @@ input, select, textarea { font: inherit; }
 .sidebar nav a { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; text-decoration: none; color: #cfd2ef; font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
 .sidebar nav a:hover { background: rgba(255,255,255,0.06); }
 .sidebar nav a.active { background: var(--primary); color: #fff; }
+.nav-icon { flex-shrink: 0; opacity: 0.85; }
+.sidebar nav a.active .nav-icon { opacity: 1; }
 .sidebar .userbox { padding: 14px 18px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 12.5px; }
 .sidebar .userbox .name { color: #fff; font-weight: 700; font-size: 13px; }
 .sidebar .userbox .role { color: #9ba0d6; margin: 2px 0 10px; }

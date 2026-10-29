@@ -139,23 +139,45 @@ function renderChangePassword(forced) {
 }
 
 // ---- Shell / nav ----
+// Stroke-based line icons (Feather-style paths), not emoji — emoji render differently
+// per OS/browser and look out of place against the dark sidebar (2026-10-29 feedback).
+const ICON_PATHS = {
+  dashboard: '<path d="M18 20V10M12 20V4M6 20v-6"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  calendar: '<rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4M12 17h.01"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4M9 13h6M9 17h6"/>',
+  rupee: '<path d="M6 3h12M6 8h12M9 13c6.667 0 6.667-10 0-10M6 13h3m0 0 8.5 8"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/>',
+  sparkle: '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>',
+  building: '<path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2M10 6h4M10 10h4M10 14h4M10 18h4"/>',
+  camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
+  mail: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+};
+function svgIcon(key) { return `<svg class="nav-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[key] || ''}</svg>`; }
+
 const NAV = [
-  { key: 'dashboard', label: 'Dashboard', perms: ['reports.read'], icon: '📊' },
-  { key: 'gate-check', label: 'Gate Check', perms: ['workers.gatecheck'], icon: '🔍' },
-  { key: 'workers', label: 'Workers', perms: ['workers.read'], icon: '👷' },
-  { key: 'attendance', label: 'Attendance', perms: ['workers.read', 'punches.read'], icon: '🗓️' },
-  { key: 'exceptions', label: 'Exceptions', perms: ['punches.read'], icon: '⚠️' },
-  { key: 'timeguard', label: 'TimeGuard', perms: ['workers.read', 'punches.read'], icon: '🛡️' },
-  { key: 'regularisations', label: 'Missed Punch', perms: ['regularisations.read'], icon: '🕒' },
-  { key: 'requests', label: 'Transfer & Exit', perms: ['requests.view'], icon: '📄' },
-  { key: 'vendor-bill', label: 'Vendor Bill', perms: ['billing.read'], icon: '💰' },
-  { key: 'reports', label: 'Reports', perms: ['reports.read'], icon: '📥' },
-  { key: 'ask-ai', label: 'Ask AI', perms: ['reports.read'], icon: '✨' },
-  { key: 'masters', label: 'Vendors / Sites / Jobs', perms: ['masters.write'], icon: '🏢' },
-  { key: 'kiosks', label: 'Gate Tablets', perms: ['kiosks.manage'], icon: '📷' },
-  { key: 'emails', label: 'Automatic Emails', perms: ['emails.manage'], icon: '✉️' },
-  { key: 'audit', label: 'Audit Log', perms: ['audit.read'], icon: '📜' },
-  { key: 'users', label: 'Admin Users', perms: ['users.manage'], icon: '⚙️' },
+  { key: 'dashboard', label: 'Dashboard', perms: ['reports.read'], icon: 'dashboard' },
+  { key: 'gate-check', label: 'Gate Check', perms: ['workers.gatecheck'], icon: 'search' },
+  { key: 'workers', label: 'Workers', perms: ['workers.read'], icon: 'users' },
+  { key: 'attendance', label: 'Attendance', perms: ['workers.read', 'punches.read'], icon: 'calendar' },
+  { key: 'exceptions', label: 'Exceptions', perms: ['punches.read'], icon: 'alert' },
+  { key: 'timeguard', label: 'TimeGuard', perms: ['workers.read', 'punches.read'], icon: 'shield' },
+  { key: 'regularisations', label: 'Missed Punch', perms: ['regularisations.read'], icon: 'clock' },
+  { key: 'requests', label: 'Transfer & Exit', perms: ['requests.view'], icon: 'file' },
+  { key: 'vendor-bill', label: 'Vendor Bill', perms: ['billing.read'], icon: 'rupee' },
+  { key: 'reports', label: 'Reports', perms: ['reports.read'], icon: 'download' },
+  { key: 'ask-ai', label: 'Ask AI', perms: ['reports.read'], icon: 'sparkle' },
+  { key: 'masters', label: 'Vendors / Sites / Jobs', perms: ['masters.write'], icon: 'building' },
+  { key: 'kiosks', label: 'Gate Tablets', perms: ['kiosks.manage'], icon: 'camera' },
+  { key: 'emails', label: 'Automatic Emails', perms: ['emails.manage'], icon: 'mail' },
+  { key: 'audit', label: 'Audit Log', perms: ['audit.read'], icon: 'list' },
+  { key: 'users', label: 'Admin Users', perms: ['users.manage'], icon: 'settings' },
 ];
 function navVisible(n) { return n.perms.every(p => state.permissions.includes(p)); }
 function defaultRoute() { const first = NAV.find(navVisible); return first ? first.key : 'dashboard'; }
@@ -168,7 +190,7 @@ function renderShell() {
     <div class="shell">
       <aside class="sidebar" id="sidebar">
         <div class="brand">TSG Workforce<span class="sub">Admin Portal</span></div>
-        <nav>${items.map(n => `<a href="#${n.key}" data-key="${n.key}">${n.icon} ${n.label}</a>`).join('') || '<p style="padding:10px;color:#9ba0d6;font-size:12.5px">No sections available for your role.</p>'}</nav>
+        <nav>${items.map(n => `<a href="#${n.key}" data-key="${n.key}">${svgIcon(n.icon)}<span>${n.label}</span></a>`).join('') || '<p style="padding:10px;color:#9ba0d6;font-size:12.5px">No sections available for your role.</p>'}</nav>
         <div class="userbox">
           <div class="name">${esc(state.user.name || state.user.email)}</div>
           <div class="role">${esc(roleLabel(state.user.role))}</div>
