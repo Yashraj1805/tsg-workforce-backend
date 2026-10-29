@@ -610,7 +610,7 @@ async function renderAttendance(content) {
     try {
       const rows = await api(`/punches?date=${date}${result ? `&result=${result}` : ''}`);
       document.getElementById('attBody').innerHTML = rows.map(p => `<tr>
-        <td>${fmtTime(p.ts)}</td><td>${esc(p.worker_name || p.worker_id)}</td><td>${esc(p.type)}</td>
+        <td class="t-nowrap">${fmtTime(p.ts)}</td><td>${esc(p.worker_name || p.worker_id)}</td><td>${esc(p.type)}</td>
         <td>${badge(p.result)}</td><td>${p.distance_m != null ? Math.round(p.distance_m) + 'm' : '—'}</td><td>${esc(p.reason || '—')}</td>
       </tr>`).join('') || emptyRow(6, 'No punches for this day');
     } catch (e) { document.getElementById('attBody').innerHTML = emptyRow(6, e.message); }
@@ -632,7 +632,7 @@ async function renderExceptions(content) {
       const rows = await api('/punches?result=blocked');
       document.getElementById('excBody').innerHTML = rows.map(p => `<tr>
         <td>${p.selfie_data_url ? `<img src="${esc(p.selfie_data_url)}" style="width:40px;height:40px;border-radius:6px;object-fit:cover" />` : '—'}</td>
-        <td>${fmtDateTime(p.ts)}</td><td>${esc(p.worker_name || p.worker_id)}</td><td>${esc(p.reason || p.face_match_note || '—')}</td><td>${p.risk_score != null ? p.risk_score : '—'}</td>
+        <td class="t-nowrap">${fmtDateTime(p.ts)}</td><td>${esc(p.worker_name || p.worker_id)}</td><td>${esc(p.reason || p.face_match_note || '—')}</td><td>${p.risk_score != null ? p.risk_score : '—'}</td>
         ${canConfirmRef ? `<td>${p.selfie_data_url ? `<button class="btn secondary small" data-w="${esc(p.worker_id)}" data-p="${esc(p.id)}">Set as reference photo</button>` : ''}</td>` : ''}
       </tr>`).join('') || emptyRow(6, 'No blocked attempts in the last 14 days');
       document.querySelectorAll('#excBody button[data-w]').forEach(b => b.onclick = async () => {
@@ -1056,7 +1056,7 @@ async function renderAudit(content) {
     <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead><tbody id="auBody"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div>`;
   try {
     const rows = await api('/audit');
-    document.getElementById('auBody').innerHTML = rows.map(a => `<tr><td>${fmtDateTime(a.ts)}</td><td>${esc(a.user)}</td><td>${esc(a.action)}</td><td>${esc(a.detail || '—')}</td></tr>`).join('') || emptyRow(4, 'No entries');
+    document.getElementById('auBody').innerHTML = rows.map(a => `<tr><td class="t-nowrap">${fmtDateTime(a.ts)}</td><td class="t-nowrap">${esc(a.user)}</td><td class="t-nowrap">${esc(a.action)}</td><td>${esc(a.detail || '—')}</td></tr>`).join('') || emptyRow(4, 'No entries');
   } catch (e) { document.getElementById('auBody').innerHTML = emptyRow(4, e.message); }
 }
 
