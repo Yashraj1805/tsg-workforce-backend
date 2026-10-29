@@ -686,12 +686,12 @@ async function renderAttendanceMonthly(body) {
       const days = Array.from({ length: data.days }, (_, i) => i + 1);
       document.getElementById('musterWrap').innerHTML = `
         <table class="data muster-table">
-          <thead><tr><th class="muster-name-col">Worker</th><th class="t-nowrap">Vendor</th><th class="t-nowrap">Site</th>${days.map(d => `<th class="muster-day-col">${d}</th>`).join('')}<th>Present</th></tr></thead>
+          <thead><tr><th class="muster-name-col">Worker</th><th class="muster-present-col">Present</th><th class="t-nowrap">Vendor</th><th class="t-nowrap">Site</th>${days.map(d => `<th class="muster-day-col">${d}</th>`).join('')}</tr></thead>
           <tbody>${data.rows.map(r => `<tr>
             <td class="muster-name-col clickable" data-mobile="${esc(r.mobile)}">${esc(r.worker)}</td>
+            <td class="muster-present-col"><strong>${r.present}</strong></td>
             <td class="t-nowrap">${esc(r.vendor || '—')}</td><td class="t-nowrap">${esc(r.location || '—')}</td>
             ${days.map(d => { const code = r.days[d] ?? ''; const cls = (MUSTER_LEGEND[code] || MUSTER_LEGEND['']).cls; return `<td class="muster-cell ${cls}" title="${esc((MUSTER_LEGEND[code] || MUSTER_LEGEND['']).label)}">${esc(code)}</td>`; }).join('')}
-            <td class="t-nowrap"><strong>${r.present}</strong></td>
           </tr>`).join('') || `<tr><td colspan="${days.length + 4}" class="empty">No approved workers in scope</td></tr>`}</tbody>
         </table>`;
       document.querySelectorAll('.muster-name-col.clickable').forEach((td, i) => td.onclick = () => openWorkerMonthDrawer(data.rows[i], m, data.days));
