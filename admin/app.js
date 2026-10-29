@@ -15,6 +15,17 @@ const ROLE_LABELS = {
 function roleLabel(r) { return ROLE_LABELS[r] || r; }
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function fmtTime(ts) { if (!ts) return '—'; return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+function fmtDateTime(ts) { if (!ts) return '—'; return new Date(ts).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+function minutesOfDay(ts) { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); }
+function fmtMinutes(min) { const h = Math.floor(min / 60), m = Math.round(min % 60); const d = new Date(); d.setHours(h, m, 0, 0); return fmtTime(d.getTime()); }
+function todayStr(ts) { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000, toRad = (x) => x * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 function toast(msg, type) {
   const el = document.createElement('div');
@@ -129,16 +140,28 @@ function renderChangePassword(forced) {
 
 // ---- Shell / nav ----
 const NAV = [
-  { key: 'dashboard', label: 'Dashboard', perm: 'reports.read', icon: '📊' },
-  { key: 'workers', label: 'Workers', perm: 'workers.read', icon: '👷' },
-  { key: 'regularisations', label: 'Missed Punch', perm: 'regularisations.read', icon: '🕒' },
-  { key: 'vendor-bill', label: 'Vendor Bill', perm: 'billing.read', icon: '💰' },
-  { key: 'users', label: 'Admin Users', perm: 'users.manage', icon: '⚙️' },
+  { key: 'dashboard', label: 'Dashboard', perms: ['reports.read'], icon: '📊' },
+  { key: 'gate-check', label: 'Gate Check', perms: ['workers.gatecheck'], icon: '🔍' },
+  { key: 'workers', label: 'Workers', perms: ['workers.read'], icon: '👷' },
+  { key: 'attendance', label: 'Attendance', perms: ['workers.read', 'punches.read'], icon: '🗓️' },
+  { key: 'exceptions', label: 'Exceptions', perms: ['punches.read'], icon: '⚠️' },
+  { key: 'timeguard', label: 'TimeGuard', perms: ['workers.read', 'punches.read'], icon: '🛡️' },
+  { key: 'regularisations', label: 'Missed Punch', perms: ['regularisations.read'], icon: '🕒' },
+  { key: 'requests', label: 'Transfer & Exit', perms: ['requests.view'], icon: '📄' },
+  { key: 'vendor-bill', label: 'Vendor Bill', perms: ['billing.read'], icon: '💰' },
+  { key: 'reports', label: 'Reports', perms: ['reports.read'], icon: '📥' },
+  { key: 'ask-ai', label: 'Ask AI', perms: ['reports.read'], icon: '✨' },
+  { key: 'masters', label: 'Vendors / Sites / Jobs', perms: ['masters.write'], icon: '🏢' },
+  { key: 'kiosks', label: 'Gate Tablets', perms: ['kiosks.manage'], icon: '📷' },
+  { key: 'emails', label: 'Automatic Emails', perms: ['emails.manage'], icon: '✉️' },
+  { key: 'audit', label: 'Audit Log', perms: ['audit.read'], icon: '📜' },
+  { key: 'users', label: 'Admin Users', perms: ['users.manage'], icon: '⚙️' },
 ];
-function defaultRoute() { const first = NAV.find(n => state.permissions.includes(n.perm)); return first ? first.key : 'dashboard'; }
+function navVisible(n) { return n.perms.every(p => state.permissions.includes(p)); }
+function defaultRoute() { const first = NAV.find(navVisible); return first ? first.key : 'dashboard'; }
 
 function renderShell() {
-  const items = NAV.filter(n => state.permissions.includes(n.perm));
+  const items = NAV.filter(navVisible);
   const current = (location.hash || '#' + defaultRoute()).replace('#', '');
   document.getElementById('app').innerHTML = `
     <div class="sidebar-backdrop" id="backdrop"></div>
@@ -174,9 +197,20 @@ function renderRoute(key) {
   if (!key) { content.innerHTML = '<div class="empty">Nothing to show for your role yet.</div>'; return; }
   content.innerHTML = '<div class="empty">Loading…</div>';
   if (key === 'dashboard') return renderDashboard(content);
+  if (key === 'gate-check') return renderGateCheck(content);
   if (key === 'workers') return renderWorkers(content);
+  if (key === 'attendance') return renderAttendance(content);
+  if (key === 'exceptions') return renderExceptions(content);
+  if (key === 'timeguard') return renderTimeGuard(content);
   if (key === 'regularisations') return renderRegularisations(content);
+  if (key === 'requests') return renderRequests(content);
   if (key === 'vendor-bill') return renderVendorBill(content);
+  if (key === 'reports') return renderReports(content);
+  if (key === 'ask-ai') return renderAskAi(content);
+  if (key === 'masters') return renderMasters(content);
+  if (key === 'kiosks') return renderKiosks(content);
+  if (key === 'emails') return renderEmails(content);
+  if (key === 'audit') return renderAudit(content);
   if (key === 'users') return renderUsers(content);
   content.innerHTML = '<div class="empty">Not found</div>';
 }
@@ -294,7 +328,7 @@ async function openWorkerDrawer(id, onChange) {
       </dl>
       <div class="actions-row">
         ${canApprove && w.status === 'pending' ? `<button class="btn primary small" id="actApprove">Approve</button><button class="btn secondary small" id="actSendBack">Send back</button><button class="btn danger small" id="actReject">Reject</button>` : ''}
-        ${canManage && w.status === 'approved' ? `<button class="btn danger small" id="actExit">Mark exited</button>` : ''}
+        ${canManage && w.status === 'approved' ? `<button class="btn secondary small" id="actTransfer">Transfer</button><button class="btn secondary small" id="actResetDevice">Reset device</button><button class="btn danger small" id="actExit">Mark exited</button>` : ''}
       </div>`;
     overlay.querySelector('.close').onclick = () => overlay.remove();
 
@@ -325,6 +359,21 @@ async function openWorkerDrawer(id, onChange) {
       const reason = prompt('Reason for exit:'); if (!reason) return;
       if (!confirm(`Mark ${w.name} as exited today?`)) return;
       act('exit', { exitDate: new Date().toISOString().slice(0, 10), reason });
+    };
+    const rd = overlay.querySelector('#actResetDevice'); if (rd) rd.onclick = () => {
+      const reason = prompt('Reason for resetting this worker\'s bound device (lets them bind a new phone):'); if (!reason) return;
+      act('reset-device', { reason });
+    };
+    const tr = overlay.querySelector('#actTransfer'); if (tr) tr.onclick = async () => {
+      const [locations, vendors] = await Promise.all([api('/locations').catch(() => []), api('/vendors').catch(() => [])]);
+      const locName = prompt(`New site (leave blank to keep "${w.location ? w.location.name : 'current'}"):\n\nOptions: ${locations.map(l => l.name).join(', ')}`, '');
+      const venName = prompt(`New vendor (leave blank to keep "${w.vendor ? w.vendor.name : 'current'}"):\n\nOptions: ${vendors.map(v => v.name).join(', ')}`, '');
+      const reason = prompt('Reason for transfer:'); if (!reason) return;
+      const loc = locName ? locations.find(l => l.name.toLowerCase() === locName.trim().toLowerCase()) : null;
+      const ven = venName ? vendors.find(v => v.name.toLowerCase() === venName.trim().toLowerCase()) : null;
+      if (locName && !loc) { toast(`No site matches "${locName}"`, 'error'); return; }
+      if (venName && !ven) { toast(`No vendor matches "${venName}"`, 'error'); return; }
+      act('transfer', { locationId: loc ? loc.id : undefined, vendorId: ven ? ven.id : undefined, reason });
     };
   } catch (e) {
     overlay.querySelector('.drawer').innerHTML = `<button class="close">&times;</button><div class="error-box">${esc(e.message)}</div>`;
@@ -492,6 +541,501 @@ async function openAddUserForm(roles, onChange) {
       toast('User created', 'success'); overlay.remove(); onChange && onChange();
     } catch (err) { toast(err.message, 'error'); }
   };
+}
+
+// ---- Gate Check (Security's main screen: quick lookup before letting someone in) ----
+async function renderGateCheck(content) {
+  content.innerHTML = `
+    <h2>Gate Check</h2>
+    <p class="page-sub">Search by name or the last digits of the mobile number</p>
+    <div class="filter-bar"><div class="field" style="flex:1;max-width:360px"><input id="gateQ" placeholder="Type at least 3 characters…" autofocus /></div></div>
+    <div id="gateResults"></div>`;
+  let t;
+  document.getElementById('gateQ').oninput = (e) => {
+    clearTimeout(t);
+    const q = e.target.value.trim();
+    if (q.length < 3) { document.getElementById('gateResults').innerHTML = ''; return; }
+    t = setTimeout(async () => {
+      try {
+        const rows = await api('/workers/gate-check?q=' + encodeURIComponent(q));
+        document.getElementById('gateResults').innerHTML = rows.map(r => `
+          <div class="card" style="display:flex;gap:14px;align-items:center">
+            ${r.photo ? `<img src="${esc(r.photo)}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;flex-shrink:0" />` : '<div style="width:56px;height:56px;border-radius:50%;background:var(--border-soft);flex-shrink:0"></div>'}
+            <div style="flex:1">
+              <strong>${esc(r.name || '(unnamed)')}</strong> <span class="muted">•••${esc(r.mobileLast4)}</span><br/>
+              <span class="muted">${esc(r.designation || '—')} · ${esc(r.vendor || '—')} · ${esc(r.location || '—')}</span>
+            </div>
+            <span class="badge ${r.entryAllowed ? 'approved' : 'rejected'}">${r.entryAllowed ? 'Allow entry' : 'Do not allow'}</span>
+          </div>`).join('') || '<div class="empty">No match</div>';
+      } catch (e) { document.getElementById('gateResults').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+    }, 300);
+  };
+}
+
+// ---- Attendance (punch register) ----
+async function renderAttendance(content) {
+  const today = new Date().toISOString().slice(0, 10);
+  content.innerHTML = `
+    <h2>Attendance</h2>
+    <div class="filter-bar">
+      <div class="field"><label>Date</label><input type="date" id="attDate" value="${today}" /></div>
+      <div class="field"><label>Result</label><select id="attResult"><option value="">All</option><option value="ok">OK</option><option value="blocked">Blocked</option></select></div>
+    </div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>Worker</th><th>Type</th><th>Result</th><th>Distance</th><th>Reason</th></tr></thead><tbody id="attBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>`;
+  async function load() {
+    const date = document.getElementById('attDate').value;
+    const result = document.getElementById('attResult').value;
+    try {
+      const rows = await api(`/punches?date=${date}${result ? `&result=${result}` : ''}`);
+      document.getElementById('attBody').innerHTML = rows.map(p => `<tr>
+        <td>${fmtTime(p.ts)}</td><td>${esc(p.worker_name || p.worker_id)}</td><td>${esc(p.type)}</td>
+        <td>${badge(p.result)}</td><td>${p.distance_m != null ? Math.round(p.distance_m) + 'm' : '—'}</td><td>${esc(p.reason || '—')}</td>
+      </tr>`).join('') || emptyRow(6, 'No punches for this day');
+    } catch (e) { document.getElementById('attBody').innerHTML = emptyRow(6, e.message); }
+  }
+  document.getElementById('attDate').onchange = load;
+  document.getElementById('attResult').onchange = load;
+  load();
+}
+
+// ---- Exceptions (blocked / flagged punches, with reference-photo confirm) ----
+async function renderExceptions(content) {
+  const canConfirmRef = state.permissions.includes('workers.approve');
+  content.innerHTML = `
+    <h2>Exceptions</h2>
+    <p class="page-sub">Blocked punch attempts, last 14 days</p>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Photo</th><th>Time</th><th>Worker</th><th>Reason</th><th>Risk</th>${canConfirmRef ? '<th></th>' : ''}</tr></thead><tbody id="excBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>`;
+  async function load() {
+    try {
+      const rows = await api('/punches?result=blocked');
+      document.getElementById('excBody').innerHTML = rows.map(p => `<tr>
+        <td>${p.selfie_data_url ? `<img src="${esc(p.selfie_data_url)}" style="width:40px;height:40px;border-radius:6px;object-fit:cover" />` : '—'}</td>
+        <td>${fmtDateTime(p.ts)}</td><td>${esc(p.worker_name || p.worker_id)}</td><td>${esc(p.reason || p.face_match_note || '—')}</td><td>${p.risk_score != null ? p.risk_score : '—'}</td>
+        ${canConfirmRef ? `<td>${p.selfie_data_url ? `<button class="btn secondary small" data-w="${esc(p.worker_id)}" data-p="${esc(p.id)}">Set as reference photo</button>` : ''}</td>` : ''}
+      </tr>`).join('') || emptyRow(6, 'No blocked attempts in the last 14 days');
+      document.querySelectorAll('#excBody button[data-w]').forEach(b => b.onclick = async () => {
+        if (!confirm('Confirm this selfie is genuinely this worker, and use it as their reference photo for future face-match checks?')) return;
+        try { await api(`/workers/${b.dataset.w}/reference-photo`, { method: 'POST', body: { punchId: b.dataset.p } }); toast('Reference photo updated', 'success'); }
+        catch (e) { toast(e.message, 'error'); }
+      });
+    } catch (e) { document.getElementById('excBody').innerHTML = emptyRow(6, e.message); }
+  }
+  load();
+}
+
+// ---- TimeGuard (pattern-based fraud/anomaly flags - computed client-side from real data,
+// same logic as the phone app's HR screen: unusual punch times, geofence-edge patterns,
+// overtime risk, high regularisation rate, and two workers punching from ~the same spot). ----
+function computeTimeGuardFlags({ workers, locations, punches, regularisations }) {
+  const flags = [];
+  const now = Date.now();
+  const sevenDaysAgo = now - 7 * 86400000, thirtyDaysAgo = now - 30 * 86400000;
+  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const locById = Object.fromEntries(locations.map(l => [l.id, l]));
+  const nameById = Object.fromEntries(workers.map(w => [w.id, w.name || w.mobile]));
+
+  workers.filter(w => w.status === 'approved').forEach(w => {
+    const wPunches = punches.filter(p => p.worker_id === w.id && p.result === 'ok');
+    const inPunches = wPunches.filter(p => p.type === 'in').sort((a, b) => a.ts - b.ts);
+    if (inPunches.length >= 4) {
+      const recentIns = inPunches.slice(-10);
+      const avgMinute = recentIns.reduce((sum, p) => sum + minutesOfDay(p.ts), 0) / recentIns.length;
+      const last = recentIns[recentIns.length - 1], lastMinute = minutesOfDay(last.ts);
+      if (last.ts > sevenDaysAgo && Math.abs(lastMinute - avgMinute) > 45) {
+        flags.push({ severity: 'warn', workerId: w.id, ts: last.ts, message: `Punched in ${Math.round(Math.abs(lastMinute - avgMinute))} min ${lastMinute > avgMinute ? 'later' : 'earlier'} than usual (average ${fmtMinutes(avgMinute)})` });
+      }
+    }
+    const blocked7d = punches.filter(p => p.worker_id === w.id && p.result === 'blocked' && p.reason === 'outside_geofence' && p.ts > sevenDaysAgo);
+    if (blocked7d.length >= 2) flags.push({ severity: 'bad', workerId: w.id, ts: blocked7d[blocked7d.length - 1].ts, message: `${blocked7d.length} outside-geofence attempts in the last 7 days` });
+    const loc = locById[w.location_id];
+    if (loc) {
+      const nearEdge = wPunches.filter(p => p.distance_m != null && p.distance_m > loc.radius * 0.8 && p.distance_m <= loc.radius && p.ts > thirtyDaysAgo);
+      if (nearEdge.length >= 3) flags.push({ severity: 'warn', workerId: w.id, ts: nearEdge[nearEdge.length - 1].ts, message: `${nearEdge.length} punches within 80-100% of the geofence radius in 30 days` });
+    }
+    const regThisMonth = regularisations.filter(r => r.worker_id === w.id && r.created_at >= monthStart.getTime());
+    const punchDaysThisMonth = new Set(wPunches.filter(p => p.ts >= monthStart.getTime()).map(p => todayStr(p.ts))).size || 1;
+    const regRate = regThisMonth.length / punchDaysThisMonth;
+    if (regThisMonth.length >= 2 && regRate > 0.02) flags.push({ severity: 'warn', workerId: w.id, ts: now, message: `${regThisMonth.length} regularisations this month (${Math.round(regRate * 100)}% of days)` });
+  });
+
+  const okPunches = punches.filter(p => p.result === 'ok' && p.lat != null).sort((a, b) => a.ts - b.ts);
+  for (let i = 0; i < okPunches.length; i++) {
+    for (let j = i + 1; j < okPunches.length; j++) {
+      const a = okPunches[i], b = okPunches[j];
+      if (b.ts - a.ts > 120000) break;
+      if (a.worker_id === b.worker_id) continue;
+      const d = haversineMeters(a.lat, a.lng, b.lat, b.lng);
+      if (d < 5) flags.push({ severity: 'bad', workerId: a.worker_id, ts: b.ts, message: `${esc(nameById[a.worker_id])} and ${esc(nameById[b.worker_id])} punched ${Math.round((b.ts - a.ts) / 1000)}s apart ${d.toFixed(1)}m apart — check for a shared device` });
+    }
+  }
+  return flags.sort((a, b) => b.ts - a.ts);
+}
+async function renderTimeGuard(content) {
+  content.innerHTML = `<h2>TimeGuard</h2><p class="page-sub">Pattern-based flags from the last 30 days — not proof, a prompt to look closer</p><div id="tgBody" class="empty">Loading…</div>`;
+  try {
+    const since = Date.now() - 30 * 86400000;
+    const [workers, locations, punches, regularisations] = await Promise.all([
+      api('/workers'), api('/locations'), api(`/punches?from=${since}&limit=1000`), api('/regularisations'),
+    ]);
+    const nameById = Object.fromEntries(workers.map(w => [w.id, w.name || w.mobile]));
+    const flags = computeTimeGuardFlags({ workers, locations, punches, regularisations });
+    document.getElementById('tgBody').innerHTML = flags.length ? flags.map(f => `
+      <div class="card" style="border-left:4px solid var(--${f.severity === 'bad' ? 'bad' : 'warn'})">
+        <strong>${esc(nameById[f.workerId] || f.workerId)}</strong> <span class="muted">· ${fmtDateTime(f.ts)}</span>
+        <p style="margin:4px 0 0">${f.message}</p>
+      </div>`).join('') : '<div class="empty">No flags right now</div>';
+  } catch (e) { document.getElementById('tgBody').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+// ---- Transfer & Exit Requests ----
+async function renderRequests(content) {
+  const canRaise = state.permissions.includes('requests.raise');
+  const canComplete = state.permissions.includes('workers.manage');
+  content.innerHTML = `
+    <h2>Transfer &amp; Exit Requests</h2>
+    <div class="actions-row" style="margin-bottom:14px">${canRaise ? '<button class="btn primary small" id="raiseBtn">+ Raise request</button>' : ''}</div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Worker</th><th>Type</th><th>Detail</th><th>Reason</th><th>Status</th><th>Raised by</th><th></th></tr></thead><tbody id="reqBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody></table></div>`;
+  async function load() {
+    try {
+      const rows = await api('/worker-requests');
+      document.getElementById('reqBody').innerHTML = rows.map(r => `<tr>
+        <td>${esc(r.worker_name)}</td><td>${esc(r.type)}</td>
+        <td>${r.type === 'transfer' ? `→ ${esc(r.to_location || r.to_vendor || '—')}` : esc(r.exit_date || '—')}</td>
+        <td>${esc(r.reason)}</td><td>${badge(r.status)}</td><td>${esc(r.raised_by)}</td>
+        <td>
+          ${r.status === 'pending' && r.type === 'transfer' && canRaise ? `<button class="btn primary small" data-act="accept" data-id="${esc(r.id)}">Accept</button>` : ''}
+          ${(r.status === 'accepted' || (r.status === 'pending' && r.type === 'exit')) && canComplete ? `<button class="btn primary small" data-act="complete" data-id="${esc(r.id)}">Complete</button>` : ''}
+          ${(r.status === 'pending' || r.status === 'accepted') && canRaise ? `<button class="btn danger small" data-act="reject" data-id="${esc(r.id)}">Reject</button>` : ''}
+        </td>
+      </tr>`).join('') || emptyRow(7, 'No requests');
+      document.querySelectorAll('#reqBody button[data-act]').forEach(b => b.onclick = async () => {
+        const id = b.dataset.id, act = b.dataset.act;
+        try {
+          if (act === 'accept') await api(`/worker-requests/${id}/accept`, { method: 'POST', body: {} });
+          else if (act === 'complete') { if (!confirm('Carry out this request now?')) return; await api(`/worker-requests/${id}/complete`, { method: 'POST', body: {} }); }
+          else if (act === 'reject') { const reason = prompt('Reason for rejecting:'); if (!reason) return; await api(`/worker-requests/${id}/reject`, { method: 'POST', body: { reason } }); }
+          toast('Updated', 'success'); load();
+        } catch (e) { toast(e.message, 'error'); }
+      });
+    } catch (e) { document.getElementById('reqBody').innerHTML = emptyRow(7, e.message); }
+  }
+  const raiseBtn = document.getElementById('raiseBtn');
+  if (raiseBtn) raiseBtn.onclick = async () => {
+    const workers = await api('/workers?status=approved').catch(() => []);
+    const name = prompt(`Worker name (approved workers only):\n\n${workers.map(w => w.name).join(', ')}`);
+    if (!name) return;
+    const w = workers.find(x => (x.name || '').toLowerCase() === name.trim().toLowerCase());
+    if (!w) { toast('No approved worker matches that name', 'error'); return; }
+    const type = (prompt('Type: "transfer" or "exit"?', 'transfer') || '').trim().toLowerCase();
+    if (type !== 'transfer' && type !== 'exit') { toast('Must be "transfer" or "exit"', 'error'); return; }
+    const reason = prompt('Reason:'); if (!reason) return;
+    const body = { workerId: w.id, type, reason };
+    if (type === 'transfer') {
+      const [locations, vendors] = await Promise.all([api('/locations').catch(() => []), api('/vendors').catch(() => [])]);
+      const locName = prompt(`New site (blank to keep current):\n\n${locations.map(l => l.name).join(', ')}`, '');
+      const venName = prompt(`New vendor (blank to keep current):\n\n${vendors.map(v => v.name).join(', ')}`, '');
+      const loc = locName ? locations.find(l => l.name.toLowerCase() === locName.trim().toLowerCase()) : null;
+      const ven = venName ? vendors.find(v => v.name.toLowerCase() === venName.trim().toLowerCase()) : null;
+      if (loc) body.toLocationId = loc.id;
+      if (ven) body.toVendorId = ven.id;
+    } else {
+      body.exitDate = prompt('Exit date (YYYY-MM-DD):', new Date().toISOString().slice(0, 10)) || undefined;
+      body.blacklist = confirm('Flag for blacklisting (misconduct)?');
+    }
+    try { await api('/worker-requests', { method: 'POST', body }); toast('Request raised', 'success'); load(); }
+    catch (e) { toast(e.message, 'error'); }
+  };
+  load();
+}
+
+// ---- Reports (Excel downloads with real filters) ----
+async function renderReports(content) {
+  let filters = { brands: [], locations: [], vendors: [], jobs: [] };
+  try { filters = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
+  const today = new Date().toISOString().slice(0, 10);
+  const monthAgo = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+  const month = new Date().toISOString().slice(0, 7);
+  content.innerHTML = `
+    <h2>Reports</h2>
+    <div class="card">
+      <h3>Attendance (date range, max 3 months)</h3>
+      <div class="filter-bar">
+        <div class="field"><label>From</label><input type="date" id="rFrom" value="${monthAgo}" /></div>
+        <div class="field"><label>To</label><input type="date" id="rTo" value="${today}" /></div>
+        <div class="field"><label>Location</label><select id="rLoc"><option value="">All</option>${filters.locations.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Vendor</label><select id="rVen"><option value="">All</option>${filters.vendors.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('')}</select></div>
+        <button class="btn primary small" id="dlAtt">Download .xlsx</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Muster roll (month)</h3>
+      <div class="filter-bar"><div class="field"><label>Month</label><input type="month" id="rMonth" value="${month}" /></div><button class="btn primary small" id="dlMuster">Download .xlsx</button></div>
+    </div>`;
+  document.getElementById('dlAtt').onclick = async () => {
+    const from = document.getElementById('rFrom').value, to = document.getElementById('rTo').value;
+    const locationId = document.getElementById('rLoc').value, vendorId = document.getElementById('rVen').value;
+    const qs = new URLSearchParams({ from, to, ...(locationId ? { locationId } : {}), ...(vendorId ? { vendorId } : {}) });
+    try { downloadBlob(await apiBlob(`/reports/attendance.xlsx?${qs}`), `attendance-${from}-to-${to}.xlsx`); } catch (e) { toast(e.message, 'error'); }
+  };
+  document.getElementById('dlMuster').onclick = async () => {
+    const m = document.getElementById('rMonth').value;
+    try { downloadBlob(await apiBlob(`/reports/muster.xlsx?month=${m}`), `muster-roll-${m}.xlsx`); } catch (e) { toast(e.message, 'error'); }
+  };
+}
+
+// ---- Ask AI ----
+async function renderAskAi(content) {
+  content.innerHTML = `
+    <h2>Ask AI</h2>
+    <p class="page-sub">Answers only from data your role can already see</p>
+    <div class="card" id="aiThread" style="min-height:200px"></div>
+    <div class="filter-bar"><div class="field" style="flex:1"><input id="aiQ" placeholder="e.g. How many workers are pending approval at Narela?" /></div><button class="btn primary small" id="aiSend">Ask</button></div>`;
+  const history = [];
+  function addBubble(role, text) {
+    const div = document.createElement('div');
+    div.style.margin = '0 0 12px'; div.style.padding = '10px 12px'; div.style.borderRadius = '8px';
+    div.style.background = role === 'user' ? 'var(--primary-tint)' : 'var(--border-soft)';
+    div.innerHTML = `<strong>${role === 'user' ? 'You' : 'AI'}:</strong> ${esc(text)}`;
+    document.getElementById('aiThread').appendChild(div);
+    div.scrollIntoView({ behavior: 'smooth' });
+  }
+  async function send() {
+    const q = document.getElementById('aiQ').value.trim();
+    if (!q) return;
+    addBubble('user', q);
+    document.getElementById('aiQ').value = '';
+    try {
+      const r = await api('/assistant/ask', { method: 'POST', body: { question: q, history } });
+      addBubble('ai', r.answer);
+      history.push({ question: q, answer: r.answer });
+    } catch (e) { addBubble('ai', e.message); }
+  }
+  document.getElementById('aiSend').onclick = send;
+  document.getElementById('aiQ').onkeydown = (e) => { if (e.key === 'Enter') send(); };
+}
+
+// ---- Masters: Vendors / Sites / Jobs (System Admin) ----
+async function renderMasters(content, tab) {
+  tab = tab || 'vendors';
+  content.innerHTML = `
+    <h2>Vendors / Sites / Jobs</h2>
+    <div class="filter-bar" style="margin-bottom:0">
+      <button class="btn ${tab === 'vendors' ? 'primary' : 'secondary'} small" data-tab="vendors">Vendors</button>
+      <button class="btn ${tab === 'locations' ? 'primary' : 'secondary'} small" data-tab="locations">Sites</button>
+      <button class="btn ${tab === 'jobs' ? 'primary' : 'secondary'} small" data-tab="jobs">Jobs</button>
+    </div>
+    <div id="mastersBody" style="margin-top:16px"></div>`;
+  content.querySelectorAll('button[data-tab]').forEach(b => b.onclick = () => renderMasters(content, b.dataset.tab));
+  const body = document.getElementById('mastersBody');
+  if (tab === 'vendors') return renderVendorsTab(body);
+  if (tab === 'locations') return renderLocationsTab(body);
+  return renderJobsTab(body);
+}
+async function renderVendorsTab(body) {
+  body.innerHTML = `<div class="actions-row" style="margin-bottom:12px"><button class="btn primary small" id="addVendor">+ Add vendor</button></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Name</th><th>GSTIN</th><th>Contact</th><th>Phone</th><th>Status</th><th></th></tr></thead><tbody id="vList"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>`;
+  async function load() {
+    try {
+      const rows = await api('/vendors');
+      document.getElementById('vList').innerHTML = rows.map(v => `<tr><td>${esc(v.name)}</td><td>${esc(v.gstin || '—')}</td><td>${esc(v.contact_person || '—')}</td><td>${esc(v.phone || '—')}</td><td>${badge(v.status)}</td><td><button class="btn secondary small" data-edit="${esc(v.id)}">Edit</button></td></tr>`).join('') || emptyRow(6, 'No vendors yet');
+      document.querySelectorAll('#vList button[data-edit]').forEach(b => b.onclick = () => openVendorForm(rows.find(v => v.id === b.dataset.edit), load));
+    } catch (e) { document.getElementById('vList').innerHTML = emptyRow(6, e.message); }
+  }
+  document.getElementById('addVendor').onclick = () => openVendorForm(null, load);
+  load();
+}
+function openVendorForm(v, onChange) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  overlay.innerHTML = `<div class="drawer"><button class="close">&times;</button>
+    <h2>${v ? 'Edit vendor' : 'Add vendor'}</h2>
+    <form id="vForm">
+      <div class="field"><label>Name</label><input id="v_name" value="${esc(v ? v.name : '')}" required /></div>
+      <div class="field"><label>GSTIN</label><input id="v_gstin" value="${esc(v ? v.gstin || '' : '')}" /></div>
+      <div class="field"><label>PAN</label><input id="v_pan" value="${esc(v ? v.pan || '' : '')}" /></div>
+      <div class="field"><label>Contact person</label><input id="v_contact" value="${esc(v ? v.contact_person || '' : '')}" /></div>
+      <div class="field"><label>Phone</label><input id="v_phone" value="${esc(v ? v.phone || '' : '')}" /></div>
+      <div class="field"><label>Contract start</label><input type="date" id="v_start" value="${esc(v ? v.contract_start || '' : '')}" /></div>
+      <div class="field"><label>Contract end</label><input type="date" id="v_end" value="${esc(v ? v.contract_end || '' : '')}" /></div>
+      <div class="field"><label>Status</label><select id="v_status"><option value="active" ${v && v.status === 'active' ? 'selected' : ''}>Active</option><option value="inactive" ${v && v.status === 'inactive' ? 'selected' : ''}>Inactive</option></select></div>
+      <button class="btn primary block" type="submit">Save</button>
+    </form>
+    <p class="hint">Vendor contact KYC (Aadhaar/PAN verification) is done from the phone app, which can take document photos.</p>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelector('.close').onclick = () => overlay.remove();
+  document.getElementById('vForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const body = { name: document.getElementById('v_name').value, gstin: document.getElementById('v_gstin').value || undefined,
+      pan: document.getElementById('v_pan').value || undefined, contactPerson: document.getElementById('v_contact').value || undefined,
+      phone: document.getElementById('v_phone').value || undefined, contractStart: document.getElementById('v_start').value || undefined,
+      contractEnd: document.getElementById('v_end').value || undefined, status: document.getElementById('v_status').value };
+    try {
+      if (v) await api(`/vendors/${v.id}`, { method: 'PUT', body }); else await api('/vendors', { method: 'POST', body });
+      toast('Saved', 'success'); overlay.remove(); onChange && onChange();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+}
+async function renderLocationsTab(body) {
+  body.innerHTML = `<div class="actions-row" style="margin-bottom:12px"><button class="btn primary small" id="addLoc">+ Add site</button></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Name</th><th>Brand</th><th>Radius</th><th></th></tr></thead><tbody id="lList"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div>`;
+  async function load() {
+    try {
+      const rows = await api('/locations');
+      document.getElementById('lList').innerHTML = rows.map(l => `<tr><td>${esc(l.name)}</td><td>${esc(l.brand || '—')}</td><td>${l.radius}m</td><td><button class="btn secondary small" data-edit="${esc(l.id)}">Edit</button></td></tr>`).join('') || emptyRow(4, 'No sites yet');
+      document.querySelectorAll('#lList button[data-edit]').forEach(b => b.onclick = () => openLocationForm(rows.find(l => l.id === b.dataset.edit), load));
+    } catch (e) { document.getElementById('lList').innerHTML = emptyRow(4, e.message); }
+  }
+  document.getElementById('addLoc').onclick = () => openLocationForm(null, load);
+  load();
+}
+function openLocationForm(l, onChange) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  overlay.innerHTML = `<div class="drawer"><button class="close">&times;</button>
+    <h2>${l ? 'Edit site' : 'Add site'}</h2>
+    <form id="lForm">
+      <div class="field"><label>Name</label><input id="l_name" value="${esc(l ? l.name : '')}" required /></div>
+      <div class="field"><label>Brand</label><input id="l_brand" value="${esc(l ? l.brand || '' : '')}" /></div>
+      <div class="field"><label>Latitude</label><input id="l_lat" type="number" step="any" value="${l ? l.lat : ''}" required /></div>
+      <div class="field"><label>Longitude</label><input id="l_lng" type="number" step="any" value="${l ? l.lng : ''}" required /></div>
+      <div class="field"><label>Geofence radius (m)</label><input id="l_radius" type="number" value="${l ? l.radius : 150}" /></div>
+      <div class="field"><label>GPS accuracy limit (m)</label><input id="l_accuracy" type="number" value="${l ? l.accuracy_limit : 100}" /></div>
+      <button class="btn primary block" type="submit">Save</button>
+    </form>
+    <p class="hint">Tip: open the site in Google Maps, right-click the exact spot, and copy the lat/lng shown.</p>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelector('.close').onclick = () => overlay.remove();
+  document.getElementById('lForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const body = { name: document.getElementById('l_name').value, brand: document.getElementById('l_brand').value || undefined,
+      lat: Number(document.getElementById('l_lat').value), lng: Number(document.getElementById('l_lng').value),
+      radius: Number(document.getElementById('l_radius').value), accuracyLimit: Number(document.getElementById('l_accuracy').value) };
+    try {
+      if (l) await api(`/locations/${l.id}`, { method: 'PUT', body }); else await api('/locations', { method: 'POST', body });
+      toast('Saved', 'success'); overlay.remove(); onChange && onChange();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+}
+async function renderJobsTab(body) {
+  body.innerHTML = `<div class="actions-row" style="margin-bottom:12px"><button class="btn primary small" id="addJob">+ Add job</button></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Icon</th><th>Name (English)</th><th>Name (Hindi)</th><th>Status</th><th></th></tr></thead><tbody id="jList"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody></table></div>`;
+  async function load() {
+    try {
+      const rows = await api('/jobs');
+      document.getElementById('jList').innerHTML = rows.map(j => `<tr><td>${esc(j.icon || '—')}</td><td>${esc(j.name)}</td><td>${esc(j.name_hi || '—')}</td><td><span class="badge ${j.active ? 'approved' : 'rejected'}">${j.active ? 'active' : 'retired'}</span></td><td><button class="btn secondary small" data-edit="${esc(j.id)}">Edit</button></td></tr>`).join('') || emptyRow(5, 'No jobs yet');
+      document.querySelectorAll('#jList button[data-edit]').forEach(b => b.onclick = () => openJobForm(rows.find(j => j.id === b.dataset.edit), load));
+    } catch (e) { document.getElementById('jList').innerHTML = emptyRow(5, e.message); }
+  }
+  document.getElementById('addJob').onclick = () => openJobForm(null, load);
+  load();
+}
+function openJobForm(j, onChange) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  overlay.innerHTML = `<div class="drawer"><button class="close">&times;</button>
+    <h2>${j ? 'Edit job' : 'Add job'}</h2>
+    <form id="jForm">
+      <div class="field"><label>Name (English)</label><input id="j_name" value="${esc(j ? j.name : '')}" required /></div>
+      <div class="field"><label>Name (Hindi)</label><input id="j_nameHi" value="${esc(j ? j.name_hi || '' : '')}" /></div>
+      <div class="field"><label>Icon (emoji)</label><input id="j_icon" value="${esc(j ? j.icon || '' : '')}" /></div>
+      ${j ? `<div class="field"><label><input type="checkbox" id="j_active" ${j.active ? 'checked' : ''} style="width:auto;margin-right:6px" />Active (shown to workers)</label></div>` : ''}
+      <button class="btn primary block" type="submit">Save</button>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelector('.close').onclick = () => overlay.remove();
+  document.getElementById('jForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const body = { name: document.getElementById('j_name').value, nameHi: document.getElementById('j_nameHi').value || undefined, icon: document.getElementById('j_icon').value || undefined };
+    if (j) body.active = document.getElementById('j_active').checked;
+    try {
+      if (j) await api(`/jobs/${j.id}`, { method: 'PUT', body }); else await api('/jobs', { method: 'POST', body });
+      toast('Saved', 'success'); overlay.remove(); onChange && onChange();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+}
+
+// ---- Gate Tablets (kiosks) ----
+async function renderKiosks(content) {
+  content.innerHTML = `<h2>Gate Tablets</h2>
+    <div class="actions-row" style="margin-bottom:14px"><button class="btn primary small" id="addKiosk">+ Add gate tablet</button></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Name</th><th>Site</th><th>Status</th><th>Paired</th><th></th></tr></thead><tbody id="kList"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody></table></div>`;
+  async function load() {
+    try {
+      const rows = await api('/kiosks');
+      document.getElementById('kList').innerHTML = rows.map(k => `<tr><td>${esc(k.name)}</td><td>${esc(k.location_name || '—')}</td><td>${badge(k.status)}</td><td>${k.paired_at ? 'Yes' : 'Not yet'}</td>
+        <td><button class="btn secondary small" data-code="${esc(k.id)}">New code</button> <button class="btn ${k.status === 'active' ? 'danger' : 'secondary'} small" data-toggle="${esc(k.id)}" data-next="${k.status === 'active' ? 'retired' : 'active'}">${k.status === 'active' ? 'Retire' : 'Reactivate'}</button></td>
+      </tr>`).join('') || emptyRow(5, 'No gate tablets yet');
+      document.querySelectorAll('#kList button[data-code]').forEach(b => b.onclick = async () => {
+        try { const r = await api(`/kiosks/${b.dataset.code}/new-code`, { method: 'POST', body: {} }); alert(`Pairing code: ${r.pairingCode}\n\nValid for ${r.pairingExpiresInHours} hours. Enter it on the tablet.`); }
+        catch (e) { toast(e.message, 'error'); }
+      });
+      document.querySelectorAll('#kList button[data-toggle]').forEach(b => b.onclick = async () => {
+        try { await api(`/kiosks/${b.dataset.toggle}`, { method: 'PUT', body: { status: b.dataset.next } }); toast('Updated', 'success'); load(); }
+        catch (e) { toast(e.message, 'error'); }
+      });
+    } catch (e) { document.getElementById('kList').innerHTML = emptyRow(5, e.message); }
+  }
+  document.getElementById('addKiosk').onclick = async () => {
+    const locations = await api('/locations').catch(() => []);
+    const name = prompt('Tablet name (e.g. "Narela Showroom Gate"):'); if (!name) return;
+    const locName = prompt(`Site:\n\n${locations.map(l => l.name).join(', ')}`); if (!locName) return;
+    const loc = locations.find(l => l.name.toLowerCase() === locName.trim().toLowerCase());
+    if (!loc) { toast('No site matches that name', 'error'); return; }
+    try { const r = await api('/kiosks', { method: 'POST', body: { name, locationId: loc.id } }); alert(`Pairing code: ${r.pairingCode}\n\nValid for ${r.pairingExpiresInHours} hours. Enter it on the tablet.`); load(); }
+    catch (e) { toast(e.message, 'error'); }
+  };
+  load();
+}
+
+// ---- Automatic Emails ----
+async function renderEmails(content) {
+  content.innerHTML = `<h2>Automatic Emails</h2><div id="emBody" class="empty">Loading…</div>`;
+  async function load() {
+    try {
+      const data = await api('/email-reports');
+      document.getElementById('emBody').innerHTML = `
+        <p class="page-sub">Email delivery: ${data.delivery.email ? '✅ configured' : '⚠️ not configured'} · WhatsApp: ${data.delivery.whatsapp ? '✅ configured' : '⚠️ not configured'}</p>
+        ${data.reports.map(r => `
+        <div class="card">
+          <h3>${esc(r.title)} <span class="badge ${r.enabled ? 'approved' : 'rejected'}" style="margin-left:8px">${r.enabled ? 'on' : 'off'}</span></h3>
+          <p class="muted" style="margin:0 0 10px">${esc(r.shows)} · to: ${esc(r.to)} · ${esc(r.schedule)} at ${esc(r.time)}</p>
+          <div class="actions-row">
+            <button class="btn secondary small" data-toggle="${esc(r.key)}" data-next="${r.enabled ? '0' : '1'}">${r.enabled ? 'Turn off' : 'Turn on'}</button>
+            <button class="btn secondary small" data-time="${esc(r.key)}">Change time</button>
+            <button class="btn secondary small" data-send="${esc(r.key)}">Send now</button>
+          </div>
+        </div>`).join('')}`;
+      document.querySelectorAll('#emBody button[data-toggle]').forEach(b => b.onclick = async () => {
+        try { await api(`/email-reports/${b.dataset.toggle}`, { method: 'PUT', body: { enabled: b.dataset.next === '1' } }); toast('Saved', 'success'); load(); }
+        catch (e) { toast(e.message, 'error'); }
+      });
+      document.querySelectorAll('#emBody button[data-time]').forEach(b => b.onclick = async () => {
+        const time = prompt('New time (24h, HH:MM):'); if (!time) return;
+        try { await api(`/email-reports/${b.dataset.time}`, { method: 'PUT', body: { time } }); toast('Saved', 'success'); load(); }
+        catch (e) { toast(e.message, 'error'); }
+      });
+      document.querySelectorAll('#emBody button[data-send]').forEach(b => b.onclick = async () => {
+        b.disabled = true; b.textContent = 'Sending…';
+        try { await api(`/email-reports/${b.dataset.send}/send-now`, { method: 'POST', body: {} }); toast('Sent', 'success'); }
+        catch (e) { toast(e.message, 'error'); }
+        finally { load(); }
+      });
+    } catch (e) { document.getElementById('emBody').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+  }
+  load();
+}
+
+// ---- Audit log ----
+async function renderAudit(content) {
+  content.innerHTML = `<h2>Audit Log</h2><p class="page-sub">Last 300 actions</p>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead><tbody id="auBody"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div>`;
+  try {
+    const rows = await api('/audit');
+    document.getElementById('auBody').innerHTML = rows.map(a => `<tr><td>${fmtDateTime(a.ts)}</td><td>${esc(a.user)}</td><td>${esc(a.action)}</td><td>${esc(a.detail || '—')}</td></tr>`).join('') || emptyRow(4, 'No entries');
+  } catch (e) { document.getElementById('auBody').innerHTML = emptyRow(4, e.message); }
 }
 
 boot();
