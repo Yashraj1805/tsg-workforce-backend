@@ -694,7 +694,7 @@ async function renderAttendanceMonthly(body) {
             <td class="t-nowrap"><strong>${r.present}</strong></td>
           </tr>`).join('') || `<tr><td colspan="${days.length + 4}" class="empty">No approved workers in scope</td></tr>`}</tbody>
         </table>`;
-      document.querySelectorAll('.muster-name-col.clickable').forEach(td => td.onclick = () => openWorkerMonthDrawer(td.dataset.mobile, td.textContent, m));
+      document.querySelectorAll('.muster-name-col.clickable').forEach((td, i) => td.onclick = () => openWorkerMonthDrawer(data.rows[i], m, data.days));
     } catch (e) { document.getElementById('musterWrap').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
   }
   document.getElementById('mMonth').onchange = load;
@@ -705,34 +705,47 @@ async function renderAttendanceMonthly(body) {
   load();
 }
 
-// Clicking a worker's name: their real in/out times for every day they punched that month.
-async function openWorkerMonthDrawer(mobile, name, month) {
+// Clicking a worker's name: a real calendar for that month, not a bare list (2026-10-29
+// feedback: the first version - a plain dt/dd list of only the days they punched - "bekar
+// h" / felt useless). Every day gets a cell: status colour from the grid's own P/½/M/A/O/R
+// code, plus actual in/out times when there's a real punch.
+async function openWorkerMonthDrawer(row, month, totalDays) {
   const overlay = document.createElement('div'); overlay.className = 'overlay';
-  overlay.innerHTML = `<div class="drawer"><button class="close">&times;</button><div class="empty">Loading…</div></div>`;
+  overlay.innerHTML = `<div class="drawer drawer-wide"><button class="close">&times;</button><div class="empty">Loading…</div></div>`;
   document.body.appendChild(overlay);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelector('.close').onclick = () => overlay.remove();
   try {
     const workers = await api('/workers?status=approved');
-    const w = workers.find(x => x.mobile === mobile);
-    if (!w) throw new Error('Worker not found');
+    const w = workers.find(x => x.mobile === row.mobile);
     const [y, mm] = month.split('-').map(Number);
-    const last = new Date(Date.UTC(y, mm, 0)).getUTCDate();
     const from = new Date(`${month}-01T00:00:00+05:30`).getTime();
-    const to = new Date(`${month}-${String(last).padStart(2, '0')}T23:59:59+05:30`).getTime();
-    const punches = await api(`/punches?workerId=${w.id}&from=${from}&to=${to + 1}&limit=400`);
+    const to = new Date(`${month}-${String(totalDays).padStart(2, '0')}T23:59:59+05:30`).getTime();
+    const punches = w ? await api(`/punches?workerId=${w.id}&from=${from}&to=${to + 1}&limit=400`) : [];
     const byDay = {};
     punches.filter(p => p.result === 'ok').forEach(p => {
-      const d = todayStr(p.ts);
+      const d = Number(todayStr(p.ts).slice(8));
       byDay[d] = byDay[d] || { ins: [], outs: [] };
       (p.type === 'in' ? byDay[d].ins : byDay[d].outs).push(p.ts);
     });
-    const days = Object.keys(byDay).sort().reverse();
+    const firstWeekday = new Date(Date.UTC(y, mm - 1, 1)).getUTCDay();
+    const cells = Array(firstWeekday).fill(null).concat(Array.from({ length: totalDays }, (_, i) => i + 1));
+    const dow = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     overlay.querySelector('.drawer').innerHTML = `
       <button class="close">&times;</button>
-      <h2>${esc(name)}</h2>
-      <p class="page-sub">${esc(month)} · ${esc(w.vendor_name || '—')} · ${esc(w.location_name || '—')}</p>
-      <dl class="kv">${days.length ? days.map(d => `<dt>${esc(d)}</dt><dd>In ${byDay[d].ins.length ? fmtTime(Math.min(...byDay[d].ins)) : '—'} · Out ${byDay[d].outs.length ? fmtTime(Math.max(...byDay[d].outs)) : '—'}</dd>`).join('') : '<dt>—</dt><dd>No punches this month</dd>'}</dl>`;
+      <h2>${esc(row.worker)}</h2>
+      <p class="page-sub">${esc(month)} · ${esc(row.vendor || '—')} · ${esc(row.location || '—')} · <strong>${row.present}</strong> days present</p>
+      <div class="cal-grid">
+        ${dow.map(l => `<div class="cal-dow">${l}</div>`).join('')}
+        ${cells.map(d => {
+          if (!d) return '<div class="cal-cell cal-blank"></div>';
+          const code = row.days[d] ?? '';
+          const info = MUSTER_LEGEND[code] || MUSTER_LEGEND[''];
+          const t = byDay[d];
+          const timeStr = t ? [t.ins.length ? fmtTime(Math.min(...t.ins)) : null, t.outs.length ? fmtTime(Math.max(...t.outs)) : null].filter(Boolean).join(' – ') : '';
+          return `<div class="cal-cell ${info.cls}" title="${esc(info.label)}"><span class="cal-day">${d}</span>${timeStr ? `<span class="cal-time">${esc(timeStr)}</span>` : code ? `<span class="cal-code">${esc(info.label)}</span>` : ''}</div>`;
+        }).join('')}
+      </div>`;
     overlay.querySelector('.close').onclick = () => overlay.remove();
   } catch (e) {
     overlay.querySelector('.drawer').innerHTML = `<button class="close">&times;</button><div class="error-box">${esc(e.message)}</div>`;

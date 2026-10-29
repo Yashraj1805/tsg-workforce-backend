@@ -94,6 +94,22 @@ th.muster-name-col { z-index: 3; }
 .muster-cell.m-pending, .muster-chip.m-pending { background: transparent; color: var(--muted); font-weight: 400; }
 .muster-name-col.clickable { cursor: pointer; color: var(--primary-dark); }
 .muster-name-col.clickable:hover { text-decoration: underline; }
+
+/* ---- Worker month calendar (drill-down from the muster grid) ---- */
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 16px; }
+.cal-dow { text-align: center; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; padding-bottom: 4px; }
+.cal-cell { border-radius: 8px; padding: 6px 4px; min-height: 56px; display: flex; flex-direction: column; gap: 2px; background: var(--border-soft); }
+.cal-cell.cal-blank { background: transparent; }
+.cal-day { font-size: 11.5px; font-weight: 700; opacity: 0.75; }
+.cal-time { font-size: 10.5px; font-weight: 700; line-height: 1.25; }
+.cal-code { font-size: 9.5px; font-weight: 700; line-height: 1.2; opacity: 0.9; }
+.cal-cell.m-p { background: var(--accent-tint); color: var(--accent-dark); }
+.cal-cell.m-half { background: var(--warn-tint); color: var(--warn); }
+.cal-cell.m-missed { background: #fde9cf; color: #a35c0a; }
+.cal-cell.m-absent { background: var(--bad-tint); color: var(--bad); }
+.cal-cell.m-off { background: var(--border-soft); color: var(--muted); }
+.cal-cell.m-reg { background: var(--primary-tint); color: var(--primary-dark); }
+.cal-cell.m-pending { background: var(--border-soft); color: var(--muted); opacity: 0.6; }
 table.data tr:hover td { background: var(--primary-tint); }
 table.data tr.clickable { cursor: pointer; }
 .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
@@ -110,6 +126,7 @@ table.data tr.clickable { cursor: pointer; }
 /* ---- Modal / detail drawer ---- */
 .overlay { position: fixed; inset: 0; background: rgba(20,22,50,0.4); display: flex; justify-content: flex-end; z-index: 30; }
 .drawer { width: 100%; max-width: 480px; background: var(--card-bg); height: 100%; overflow-y: auto; padding: 24px; }
+.drawer.drawer-wide { max-width: 640px; }
 .drawer .close { float: right; background: none; border: none; font-size: 20px; color: var(--muted); }
 .kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 10px; font-size: 13.5px; margin: 14px 0; }
 .kv dt { color: var(--muted); }
