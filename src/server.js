@@ -68,6 +68,9 @@ app.get('/health', (req, res) => {
 // (same /api/auth/hr/login the HR screens in the phone app already used) instead of on a
 // phone app built for workers. See admin/app.js.
 const ADMIN_DIR = path.join(__dirname, '../admin');
+// manpower.thesachdevgroup.com's only job is this portal, so the bare domain should land
+// people on it rather than the API's JSON 404.
+app.get('/', (req, res) => res.redirect('/admin/'));
 app.use('/admin', express.static(ADMIN_DIR));
 app.get(/^\/admin\/.*/, (req, res) => res.sendFile(path.join(ADMIN_DIR, 'index.html')));
 
