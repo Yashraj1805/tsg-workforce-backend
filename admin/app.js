@@ -15,6 +15,10 @@ const ROLE_LABELS = {
 function roleLabel(r) { return ROLE_LABELS[r] || r; }
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+// Clickable table rows/cells (muster names, worker rows) only had a mouse click handler -
+// keyboard users had no way to activate them even though they now get a visible focus ring.
+// tabindex="0" + role="button" belong on the element in markup; this just wires Enter/Space.
+function bindActivate(el, handler) { el.onclick = handler; el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } }; }
 function fmtTime(ts) { if (!ts) return '—'; return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
 function fmtDateTime(ts) { if (!ts) return '—'; return new Date(ts).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
 function minutesOfDay(ts) { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); }
@@ -198,10 +202,10 @@ function renderShell() {
           <button class="btn secondary small block" id="logoutBtn">Sign out</button>
         </div>
       </aside>
-      <div class="main">
+      <main class="main">
         <div class="topbar"><button class="hamburger" id="hamburger">☰</button><strong>TSG Workforce</strong><span></span></div>
         <div class="content" id="content"></div>
-      </div>
+      </main>
     </div>`;
   document.getElementById('logoutBtn').onclick = () => doLogout(false);
   document.getElementById('changePwBtn').onclick = () => renderChangePassword(false);
@@ -315,8 +319,8 @@ async function renderWorkers(content) {
     const q = document.getElementById('searchBox').value.trim().toLowerCase();
     const rows = all.filter(w => !q || (w.name || '').toLowerCase().includes(q) || (w.mobile || '').includes(q));
     const tbody = document.querySelector('#workersTable tbody');
-    tbody.innerHTML = rows.map(w => `<tr class="clickable" data-id="${esc(w.id)}"><td>${esc(w.name || '(unnamed)')}</td><td>${esc(w.mobile || '—')}</td><td>${esc(w.vendor_name || '—')}</td><td>${esc(w.location_name || '—')}</td><td>${badge(w.status)}</td></tr>`).join('') || emptyRow(5, 'No workers found');
-    tbody.querySelectorAll('tr[data-id]').forEach(tr => tr.onclick = () => openWorkerDrawer(tr.dataset.id, load));
+    tbody.innerHTML = rows.map(w => `<tr class="clickable" tabindex="0" role="button" data-id="${esc(w.id)}"><td>${esc(w.name || '(unnamed)')}</td><td>${esc(w.mobile || '—')}</td><td>${esc(w.vendor_name || '—')}</td><td>${esc(w.location_name || '—')}</td><td>${badge(w.status)}</td></tr>`).join('') || emptyRow(5, 'No workers found');
+    tbody.querySelectorAll('tr[data-id]').forEach(tr => bindActivate(tr, () => openWorkerDrawer(tr.dataset.id, load)));
   }
   document.getElementById('statusFilter').onchange = load;
   document.getElementById('searchBox').oninput = renderRows;
@@ -688,13 +692,13 @@ async function renderAttendanceMonthly(body) {
         <table class="data muster-table">
           <thead><tr><th class="muster-name-col">Worker</th><th class="muster-present-col">Present</th><th class="t-nowrap">Vendor</th><th class="t-nowrap">Site</th>${days.map(d => `<th class="muster-day-col">${d}</th>`).join('')}</tr></thead>
           <tbody>${data.rows.map(r => `<tr>
-            <td class="muster-name-col clickable" data-mobile="${esc(r.mobile)}">${esc(r.worker)}</td>
+            <td class="muster-name-col clickable" tabindex="0" role="button" data-mobile="${esc(r.mobile)}">${esc(r.worker)}</td>
             <td class="muster-present-col"><strong>${r.present}</strong></td>
             <td class="t-nowrap">${esc(r.vendor || '—')}</td><td class="t-nowrap">${esc(r.location || '—')}</td>
             ${days.map(d => { const code = r.days[d] ?? ''; const cls = (MUSTER_LEGEND[code] || MUSTER_LEGEND['']).cls; return `<td class="muster-cell ${cls}" title="${esc((MUSTER_LEGEND[code] || MUSTER_LEGEND['']).label)}">${esc(code)}</td>`; }).join('')}
           </tr>`).join('') || `<tr><td colspan="${days.length + 4}" class="empty">No approved workers in scope</td></tr>`}</tbody>
         </table>`;
-      document.querySelectorAll('.muster-name-col.clickable').forEach((td, i) => td.onclick = () => openWorkerMonthDrawer(data.rows[i], m, data.days));
+      document.querySelectorAll('.muster-name-col.clickable').forEach((td, i) => bindActivate(td, () => openWorkerMonthDrawer(data.rows[i], m, data.days)));
     } catch (e) { document.getElementById('musterWrap').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
   }
   document.getElementById('mMonth').onchange = load;
