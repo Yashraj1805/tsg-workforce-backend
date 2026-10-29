@@ -299,6 +299,7 @@ async function renderWorkers(content) {
       <div class="field"><label>Status</label>
         <select id="statusFilter">
           <option value="">All</option>
+          <option value="draft">Draft (incomplete)</option>
           <option value="pending">Pending approval</option>
           <option value="sent_back">Sent back</option>
           <option value="approved">Approved</option>
@@ -355,6 +356,7 @@ async function openWorkerDrawer(id, onChange) {
       <div class="actions-row">
         ${canApprove && w.status === 'pending' ? `<button class="btn primary small" id="actApprove">Approve</button><button class="btn secondary small" id="actSendBack">Send back</button><button class="btn danger small" id="actReject">Reject</button>` : ''}
         ${canManage && w.status === 'approved' ? `<button class="btn secondary small" id="actTransfer">Transfer</button><button class="btn secondary small" id="actResetDevice">Reset device</button><button class="btn danger small" id="actExit">Mark exited</button>` : ''}
+        ${canManage && ['draft', 'sent_back', 'rejected', 'exited'].includes(w.status) && !w.blacklisted ? `<button class="btn danger small" id="actDelete">Delete ${esc(w.status === 'draft' ? 'draft' : 'record')}</button>` : ''}
       </div>`;
     overlay.querySelector('.close').onclick = () => overlay.remove();
 
@@ -386,6 +388,11 @@ async function openWorkerDrawer(id, onChange) {
     }, 'Mark exited');
     const rd = overlay.querySelector('#actResetDevice'); if (rd) rd.onclick = () => openReasonPrompt('Reason for resetting this worker\'s bound device (lets them bind a new phone)', (reason) => act('reset-device', { reason }));
     const tr = overlay.querySelector('#actTransfer'); if (tr) tr.onclick = () => openTransferForm(id, w, () => { overlay.remove(); onChange && onChange(); });
+    const del = overlay.querySelector('#actDelete'); if (del) del.onclick = () => openFormDialog(`Delete ${esc(w.name || 'this record')}?`, [{ id: 'reason', label: 'Reason (optional)', type: 'text' }], async (v) => {
+      if (!confirm(`Permanently delete ${w.name || 'this record'}? This cannot be undone.`)) return;
+      await api(`/workers/${id}`, { method: 'DELETE', body: { reason: v.reason } });
+      toast('Deleted', 'success'); overlay.remove(); onChange && onChange();
+    }, 'Delete permanently');
   } catch (e) {
     overlay.querySelector('.drawer').innerHTML = `<button class="close">&times;</button><div class="error-box">${esc(e.message)}</div>`;
     overlay.querySelector('.close').onclick = () => overlay.remove();
