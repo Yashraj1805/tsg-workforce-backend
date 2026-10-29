@@ -16,6 +16,10 @@ const ROLES = {
   mis_finance: 'MIS / Finance',
   security: 'Security',
   system_admin: 'System Admin',
+  // 2026-10-29 (Harpreet): System Admin is deliberately scoped to setup-only (masters/
+  // users), not worker data - see ROLE_SCOPE below. Super Admin is the separate "sees and
+  // can do everything" role, for whoever should have the full picture.
+  super_admin: 'Super Admin',
 };
 
 // Which scope column each role needs set on its hr_users row. A role whose scope
@@ -29,6 +33,7 @@ const ROLE_SCOPE = {
   mis_finance: 'all',
   security: 'all',
   system_admin: 'none',           // sets up masters/users; no access to worker data
+  super_admin: 'all',
 };
 
 // BRD §5, mapped onto what the API actually exposes. "Cannot do" column is enforced by
@@ -71,6 +76,10 @@ const PERMISSIONS = {
   'requests.raise':        ['reporting_manager', 'site_hr', 'central_hr'],
   'requests.view':         ['reporting_manager', 'site_hr', 'central_hr', 'location_head'],
 };
+
+// Super Admin: every permission, by construction, so it can never drift out of sync as
+// new permissions get added above (unlike every other role, which is hand-scoped).
+for (const key in PERMISSIONS) PERMISSIONS[key].push('super_admin');
 
 // Security's punch access is limited to blocked attempts (BRD: "View blocked punches").
 const PUNCH_RESULT_RESTRICTION = { security: 'blocked' };

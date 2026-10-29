@@ -10,7 +10,7 @@ let state = { token: localStorage.getItem(TOKEN_KEY) || null, user: null, permis
 const ROLE_LABELS = {
   reporting_manager: 'Reporting Manager', site_hr: 'Team Lead', central_hr: 'Central HR',
   location_head: 'Location Head', vendor_coordinator: 'Vendor Coordinator', mis_finance: 'MIS / Finance',
-  security: 'Security', system_admin: 'System Admin',
+  security: 'Security', system_admin: 'System Admin', super_admin: 'Super Admin',
 };
 function roleLabel(r) { return ROLE_LABELS[r] || r; }
 

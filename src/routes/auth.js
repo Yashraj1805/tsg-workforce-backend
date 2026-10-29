@@ -78,6 +78,24 @@ const forceResetEmails = (process.env.ADMIN_FORCE_RESET_EMAIL || '').split(',').
   }
 })();
 
+// Promotes specific accounts to Super Admin on boot (comma-separated emails). Exists
+// because the Users screen's own self-role-change guard (routes/users.js) correctly
+// blocks a System Admin from changing their own role - there'd otherwise be no way for
+// the very first Super Admin to get that role without someone else already having it.
+// Set PROMOTE_TO_SUPER_ADMIN once, confirm the account shows "Super Admin", then unset
+// it again (same lifecycle as ADMIN_FORCE_RESET_EMAIL above) - it re-applies on every
+// boot while set, which is harmless but pointless once the promotion has happened.
+(function promoteToSuperAdmin() {
+  const emails = (process.env.PROMOTE_TO_SUPER_ADMIN || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  for (const email of emails) {
+    const existing = db.prepare('SELECT * FROM hr_users WHERE lower(email) = lower(?)').get(email);
+    if (!existing) { console.warn(`[auth] ${email} is in PROMOTE_TO_SUPER_ADMIN but has no account yet`); continue; }
+    if (existing.role === 'super_admin') continue;
+    db.prepare('UPDATE hr_users SET role = ? WHERE id = ?').run('super_admin', existing.id);
+    addAudit('system', 'promote_super_admin', `${email}: ${existing.role} -> super_admin (via PROMOTE_TO_SUPER_ADMIN)`);
+  }
+})();
+
 router.post('/hr/login', (req, res) => {
   const { email, password } = req.body || {};
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '') || typeof password !== 'string') return res.status(400).json({ error: 'email and password are required' });
