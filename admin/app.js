@@ -619,30 +619,125 @@ async function renderGateCheck(content) {
   };
 }
 
-// ---- Attendance (punch register) ----
-async function renderAttendance(content) {
-  const today = new Date().toISOString().slice(0, 10);
+// ---- Attendance: a month-wise worker × day grid by default (2026-10-29 feedback: the old
+// single-day flat list "wasn't useful" - wanted everyone's names, click through to each
+// day's punch-in, month-wise, like a real muster roll). The old day log is still there as
+// a second tab, since it's still the right view for "what happened today specifically". ----
+async function renderAttendance(content, tab) {
+  tab = tab || 'monthly';
   content.innerHTML = `
     <h2>Attendance</h2>
+    <div class="filter-bar" style="margin-bottom:0">
+      <button class="btn ${tab === 'monthly' ? 'primary' : 'secondary'} small" data-tab="monthly">Monthly grid</button>
+      <button class="btn ${tab === 'day' ? 'primary' : 'secondary'} small" data-tab="day">Day log</button>
+    </div>
+    <div id="attTabBody" style="margin-top:16px"></div>`;
+  content.querySelectorAll('button[data-tab]').forEach(b => b.onclick = () => renderAttendance(content, b.dataset.tab));
+  const body = document.getElementById('attTabBody');
+  if (tab === 'day') return renderAttendanceDayLog(body);
+  return renderAttendanceMonthly(body);
+}
+
+function renderAttendanceDayLog(body) {
+  const today = new Date().toISOString().slice(0, 10);
+  body.innerHTML = `
     <div class="filter-bar">
       <div class="field"><label>Date</label><input type="date" id="attDate" value="${today}" /></div>
       <div class="field"><label>Result</label><select id="attResult"><option value="">All</option><option value="ok">OK</option><option value="blocked">Blocked</option></select></div>
     </div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>Worker</th><th>Type</th><th>Result</th><th>Distance</th><th>Reason</th></tr></thead><tbody id="attBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>`;
+    <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>Worker</th><th>Type</th><th>Result</th><th>Distance</th><th>Reason</th></tr></thead><tbody id="attLogBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>`;
   async function load() {
     const date = document.getElementById('attDate').value;
     const result = document.getElementById('attResult').value;
     try {
       const rows = await api(`/punches?date=${date}${result ? `&result=${result}` : ''}`);
-      document.getElementById('attBody').innerHTML = rows.map(p => `<tr>
+      document.getElementById('attLogBody').innerHTML = rows.map(p => `<tr>
         <td class="t-nowrap">${fmtTime(p.ts)}</td><td>${esc(p.worker_name || p.worker_id)}</td><td>${esc(p.type)}</td>
         <td>${badge(p.result)}</td><td>${p.distance_m != null ? Math.round(p.distance_m) + 'm' : '—'}</td><td>${esc(p.reason || '—')}</td>
       </tr>`).join('') || emptyRow(6, 'No punches for this day');
-    } catch (e) { document.getElementById('attBody').innerHTML = emptyRow(6, e.message); }
+    } catch (e) { document.getElementById('attLogBody').innerHTML = emptyRow(6, e.message); }
   }
   document.getElementById('attDate').onchange = load;
   document.getElementById('attResult').onchange = load;
   load();
+}
+
+// Same codes the muster.xlsx export already uses (services/reports.js musterRows) - reused
+// as-is, not reinvented, so the website and the Excel export always agree.
+const MUSTER_LEGEND = {
+  P: { label: 'Present', cls: 'm-p' }, '½': { label: 'Half day', cls: 'm-half' }, M: { label: 'Missed punch-out', cls: 'm-missed' },
+  A: { label: 'Absent', cls: 'm-absent' }, O: { label: 'Weekly off', cls: 'm-off' }, R: { label: 'Present (regularised)', cls: 'm-reg' },
+  '': { label: 'Not punched yet', cls: 'm-pending' },
+};
+
+async function renderAttendanceMonthly(body) {
+  const month = new Date().toISOString().slice(0, 7);
+  body.innerHTML = `
+    <div class="filter-bar">
+      <div class="field"><label>Month</label><input type="month" id="mMonth" value="${month}" /></div>
+      <button class="btn secondary small" id="mDownload">Download .xlsx</button>
+    </div>
+    <div class="muster-legend">${Object.entries(MUSTER_LEGEND).map(([k, v]) => `<span class="muster-chip ${v.cls}">${esc(k || '—')} ${esc(v.label)}</span>`).join('')}</div>
+    <div class="table-wrap" id="musterWrap"><div class="empty">Loading…</div></div>`;
+  async function load() {
+    const m = document.getElementById('mMonth').value;
+    try {
+      const data = await api(`/reports/muster?month=${m}`);
+      const days = Array.from({ length: data.days }, (_, i) => i + 1);
+      document.getElementById('musterWrap').innerHTML = `
+        <table class="data muster-table">
+          <thead><tr><th class="muster-name-col">Worker</th><th class="t-nowrap">Vendor</th><th class="t-nowrap">Site</th>${days.map(d => `<th class="muster-day-col">${d}</th>`).join('')}<th>Present</th></tr></thead>
+          <tbody>${data.rows.map(r => `<tr>
+            <td class="muster-name-col clickable" data-mobile="${esc(r.mobile)}">${esc(r.worker)}</td>
+            <td class="t-nowrap">${esc(r.vendor || '—')}</td><td class="t-nowrap">${esc(r.location || '—')}</td>
+            ${days.map(d => { const code = r.days[d] ?? ''; const cls = (MUSTER_LEGEND[code] || MUSTER_LEGEND['']).cls; return `<td class="muster-cell ${cls}" title="${esc((MUSTER_LEGEND[code] || MUSTER_LEGEND['']).label)}">${esc(code)}</td>`; }).join('')}
+            <td class="t-nowrap"><strong>${r.present}</strong></td>
+          </tr>`).join('') || `<tr><td colspan="${days.length + 4}" class="empty">No approved workers in scope</td></tr>`}</tbody>
+        </table>`;
+      document.querySelectorAll('.muster-name-col.clickable').forEach(td => td.onclick = () => openWorkerMonthDrawer(td.dataset.mobile, td.textContent, m));
+    } catch (e) { document.getElementById('musterWrap').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+  }
+  document.getElementById('mMonth').onchange = load;
+  document.getElementById('mDownload').onclick = async () => {
+    const m = document.getElementById('mMonth').value;
+    try { downloadBlob(await apiBlob(`/reports/muster.xlsx?month=${m}`), `muster-roll-${m}.xlsx`); } catch (e) { toast(e.message, 'error'); }
+  };
+  load();
+}
+
+// Clicking a worker's name: their real in/out times for every day they punched that month.
+async function openWorkerMonthDrawer(mobile, name, month) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  overlay.innerHTML = `<div class="drawer"><button class="close">&times;</button><div class="empty">Loading…</div></div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelector('.close').onclick = () => overlay.remove();
+  try {
+    const workers = await api('/workers?status=approved');
+    const w = workers.find(x => x.mobile === mobile);
+    if (!w) throw new Error('Worker not found');
+    const [y, mm] = month.split('-').map(Number);
+    const last = new Date(Date.UTC(y, mm, 0)).getUTCDate();
+    const from = new Date(`${month}-01T00:00:00+05:30`).getTime();
+    const to = new Date(`${month}-${String(last).padStart(2, '0')}T23:59:59+05:30`).getTime();
+    const punches = await api(`/punches?workerId=${w.id}&from=${from}&to=${to + 1}&limit=400`);
+    const byDay = {};
+    punches.filter(p => p.result === 'ok').forEach(p => {
+      const d = todayStr(p.ts);
+      byDay[d] = byDay[d] || { ins: [], outs: [] };
+      (p.type === 'in' ? byDay[d].ins : byDay[d].outs).push(p.ts);
+    });
+    const days = Object.keys(byDay).sort().reverse();
+    overlay.querySelector('.drawer').innerHTML = `
+      <button class="close">&times;</button>
+      <h2>${esc(name)}</h2>
+      <p class="page-sub">${esc(month)} · ${esc(w.vendor_name || '—')} · ${esc(w.location_name || '—')}</p>
+      <dl class="kv">${days.length ? days.map(d => `<dt>${esc(d)}</dt><dd>In ${byDay[d].ins.length ? fmtTime(Math.min(...byDay[d].ins)) : '—'} · Out ${byDay[d].outs.length ? fmtTime(Math.max(...byDay[d].outs)) : '—'}</dd>`).join('') : '<dt>—</dt><dd>No punches this month</dd>'}</dl>`;
+    overlay.querySelector('.close').onclick = () => overlay.remove();
+  } catch (e) {
+    overlay.querySelector('.drawer').innerHTML = `<button class="close">&times;</button><div class="error-box">${esc(e.message)}</div>`;
+    overlay.querySelector('.close').onclick = () => overlay.remove();
+  }
 }
 
 // ---- Exceptions (blocked / flagged punches, with reference-photo confirm) ----

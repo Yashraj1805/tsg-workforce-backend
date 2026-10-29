@@ -109,6 +109,14 @@ router.get('/filters', requirePermission('reports.read'), (req, res) => {
   res.json({ brands: [...new Set(locs.map(l => l.brand).filter(Boolean))].sort(), locations: locs, vendors, jobs });
 });
 
+// Month-wise worker × day grid (JSON) behind the Attendance screen's monthly view - same
+// computation as muster.xlsx below, just returned for the browser instead of a download.
+router.get('/muster', requirePermission('reports.read'), (req, res) => {
+  const month = req.query.month || currentMonth();
+  if (!MONTH_RE.test(month)) return res.status(400).json({ error: 'month must be YYYY-MM' });
+  res.json(reports.musterRows(workerScopeSql(req.user, 'w'), readFilters(req.query), month));
+});
+
 router.get('/attendance.xlsx', requirePermission('reports.read'), async (req, res) => {
   const { from, to } = req.query;
   if (!DATE_RE.test(from || '') || !DATE_RE.test(to || '') || to < from) return res.status(400).json({ error: 'from and to (YYYY-MM-DD) are required' });

@@ -74,6 +74,26 @@ table.data { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 table.data th { text-align: left; padding: 9px 10px; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; border-bottom: 1.5px solid var(--border); white-space: nowrap; }
 table.data td { padding: 10px 10px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; color: var(--text); }
 table.data td.t-nowrap { white-space: nowrap; }
+
+/* ---- Attendance monthly grid (muster roll) ---- */
+.muster-legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 16px; }
+.muster-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
+.muster-table { border-collapse: separate; border-spacing: 0; }
+.muster-table th, .muster-table td { text-align: center; }
+.muster-table thead th { background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
+.muster-name-col { text-align: left !important; position: sticky; left: 0; background: var(--card-bg); z-index: 1; min-width: 150px; font-weight: 600; white-space: nowrap; }
+th.muster-name-col { z-index: 3; }
+.muster-day-col { min-width: 30px; font-size: 11px; }
+.muster-cell { font-weight: 800; font-size: 12px; border-radius: 5px; min-width: 28px; }
+.muster-cell.m-p, .muster-chip.m-p { background: var(--accent-tint); color: var(--accent-dark); }
+.muster-cell.m-half, .muster-chip.m-half { background: var(--warn-tint); color: var(--warn); }
+.muster-cell.m-missed, .muster-chip.m-missed { background: #fde9cf; color: #a35c0a; }
+.muster-cell.m-absent, .muster-chip.m-absent { background: var(--bad-tint); color: var(--bad); }
+.muster-cell.m-off, .muster-chip.m-off { background: var(--border-soft); color: var(--muted); }
+.muster-cell.m-reg, .muster-chip.m-reg { background: var(--primary-tint); color: var(--primary-dark); }
+.muster-cell.m-pending, .muster-chip.m-pending { background: transparent; color: var(--muted); font-weight: 400; }
+.muster-name-col.clickable { cursor: pointer; color: var(--primary-dark); }
+.muster-name-col.clickable:hover { text-decoration: underline; }
 table.data tr:hover td { background: var(--primary-tint); }
 table.data tr.clickable { cursor: pointer; }
 .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
