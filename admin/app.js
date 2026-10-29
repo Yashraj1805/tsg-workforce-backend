@@ -1084,17 +1084,37 @@ function openVendorForm(v, onChange) {
       <div class="field"><label>GSTIN</label><input id="v_gstin" value="${esc(v ? v.gstin || '' : '')}" /></div>
       <div class="field"><label>PAN</label><input id="v_pan" value="${esc(v ? v.pan || '' : '')}" /></div>
       <div class="field"><label>Contact person</label><input id="v_contact" value="${esc(v ? v.contact_person || '' : '')}" /></div>
+      ${v ? `<div class="field">
+        <label>Contact person PAN ${v.contact_pan_verified ? '<span class="badge approved" style="margin-left:6px">Verified</span>' : ''}</label>
+        <div style="display:flex;gap:8px">
+          <input id="v_contactPan" value="${esc(v.contact_pan_number || '')}" placeholder="ABCDE1234F" style="flex:1" />
+          <button type="button" class="btn secondary small" id="v_verifyPanBtn">Verify</button>
+        </div>
+        <div id="v_panResult" class="hint" style="margin-top:6px">${v.contact_pan_verified ? `Verified against Setu: ${esc(v.contact_pan_name || '')}` : 'Not verified yet - type the PAN and tap Verify (checked against Setu, no photo needed).'}</div>
+      </div>` : ''}
       <div class="field"><label>Phone</label><input id="v_phone" value="${esc(v ? v.phone || '' : '')}" /></div>
       <div class="field"><label>Contract start</label><input type="date" id="v_start" value="${esc(v ? v.contract_start || '' : '')}" /></div>
       <div class="field"><label>Contract end</label><input type="date" id="v_end" value="${esc(v ? v.contract_end || '' : '')}" /></div>
       <div class="field"><label>Status</label><select id="v_status"><option value="active" ${v && v.status === 'active' ? 'selected' : ''}>Active</option><option value="inactive" ${v && v.status === 'inactive' ? 'selected' : ''}>Inactive</option></select></div>
       <button class="btn primary block" type="submit">Save</button>
     </form>
-    <p class="hint">Vendor contact KYC (Aadhaar/PAN verification) is done from the phone app, which can take document photos.</p>
+    <p class="hint">Contact person Aadhaar verification still needs the phone app (DigiLocker requires a redirect flow, not just typing a number) - PAN is the one check that works right here.</p>
   </div>`;
   document.body.appendChild(overlay);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelector('.close').onclick = () => overlay.remove();
+  const verifyBtn = overlay.querySelector('#v_verifyPanBtn');
+  if (verifyBtn) verifyBtn.onclick = async () => {
+    const pan = document.getElementById('v_contactPan').value.trim().toUpperCase();
+    if (!pan) { toast('Enter a PAN first', 'error'); return; }
+    verifyBtn.disabled = true; verifyBtn.textContent = 'Checking…';
+    try {
+      const r = await api('/vendor-kyc/pan-verify', { method: 'POST', body: { pan, vendorId: v.id } });
+      document.getElementById('v_panResult').textContent = `Verified against Setu: ${r.fullName || '—'}`;
+      toast(r.warning || 'PAN verified', r.warning ? 'error' : 'success');
+    } catch (e) { toast(e.message, 'error'); }
+    finally { verifyBtn.disabled = false; verifyBtn.textContent = 'Verify'; }
+  };
   document.getElementById('vForm').onsubmit = async (e) => {
     e.preventDefault();
     const body = { name: document.getElementById('v_name').value, gstin: document.getElementById('v_gstin').value || undefined,
