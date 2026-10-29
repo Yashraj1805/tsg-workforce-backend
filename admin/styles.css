@@ -81,10 +81,12 @@ table.data td.t-nowrap { white-space: nowrap; }
 .muster-table { border-collapse: separate; border-spacing: 0; }
 .muster-table th, .muster-table td { text-align: center; }
 .muster-table thead th { background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
-.muster-name-col { text-align: left !important; position: sticky; left: 0; background: var(--card-bg); z-index: 1; min-width: 150px; font-weight: 600; white-space: nowrap; }
-th.muster-name-col { z-index: 3; }
-.muster-present-col { position: sticky; left: 150px; background: var(--card-bg); z-index: 1; min-width: 70px; box-shadow: 2px 0 4px -2px rgba(23,27,80,0.1); }
-th.muster-present-col { z-index: 3; }
+.muster-name-col, .muster-present-col { position: sticky; background: var(--card-bg); z-index: 1; }
+.muster-name-col { text-align: left !important; left: 0; min-width: 150px; font-weight: 600; white-space: nowrap; }
+.muster-present-col { left: 150px; min-width: 70px; box-shadow: 2px 0 4px -2px rgba(23,27,80,0.1); }
+/* Must out-specificity ".muster-table thead th" above (0,1,2) or its z-index:2 silently wins
+   and a later header cell (same z-index, later in the DOM) paints over these on scroll. */
+.muster-table thead th.muster-name-col, .muster-table thead th.muster-present-col { z-index: 4; }
 .muster-day-col { min-width: 30px; font-size: 11px; }
 .muster-cell { font-weight: 800; font-size: 12px; border-radius: 5px; min-width: 28px; }
 .muster-cell.m-p, .muster-chip.m-p { background: var(--accent-tint); color: var(--accent-dark); }
