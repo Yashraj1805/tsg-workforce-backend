@@ -276,15 +276,18 @@ async function runReport(key, trigger, by) {
   if (!s) throw new Error('Unknown report');
   const messages = await BUILDERS[key]();
   let sent = 0, recipients = 0;
+  const failures = []; // {to, error} - the real reason, not a guess, surfaced in the note/audit below
   for (const m of messages) {
     const to = [...new Set([...m.to, ...s.extraRecipients])];
     recipients += to.length;
     const r = await sendEmail(to, `TSG Workforce: ${m.subject}`, m.text, m.attachments);
-    if (r.ok) sent++;
+    if (r.ok) sent++; else failures.push({ to: to.join(', '), error: r.error || (r.skipped ? 'SMTP not configured' : 'unknown error') });
     for (const mobile of m.whatsapp || []) await sendWhatsApp(mobile, `${m.subject}\n\n${m.text}`.slice(0, 3500));
   }
   const period = periodKey(s);
-  const note = messages.length ? `${messages.length} message(s) to ${recipients} receiver(s)${sent < messages.length ? ` — ${messages.length - sent} not delivered (SMTP not configured or failed)` : ''}` : 'nothing to send';
+  const note = messages.length
+    ? `${messages.length} message(s) to ${recipients} receiver(s)${failures.length ? ` — ${failures.length} not delivered: ${failures.map(f => `${f.to} (${f.error})`).join('; ')}` : ''}`
+    : 'nothing to send';
   try {
     db.prepare('INSERT INTO email_runs (id, report, period, ran_at, trigger, messages, sent, note) VALUES (?,?,?,?,?,?,?,?)')
       .run(crypto.randomUUID(), key, trigger === 'schedule' ? period : `${period}#${Date.now()}`, Date.now(), trigger, messages.length, sent, note);

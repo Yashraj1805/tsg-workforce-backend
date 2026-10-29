@@ -1251,16 +1251,19 @@ async function renderEmails(content) {
       const data = await api('/email-reports');
       document.getElementById('emBody').innerHTML = `
         <p class="page-sub">Email delivery: ${data.delivery.email ? '✅ configured' : '⚠️ not configured'} · WhatsApp: ${data.delivery.whatsapp ? '✅ configured' : '⚠️ not configured'}</p>
-        ${data.reports.map(r => `
+        ${data.reports.map(r => {
+          const lastRun = data.runs.find(run => run.report === r.key);
+          return `
         <div class="card">
           <h3>${esc(r.title)} <span class="badge ${r.enabled ? 'approved' : 'rejected'}" style="margin-left:8px">${r.enabled ? 'on' : 'off'}</span></h3>
           <p class="muted" style="margin:0 0 10px">${esc(r.shows)} · to: ${esc(r.to)} · ${esc(r.schedule)} at ${esc(r.time)}</p>
+          ${lastRun ? `<p class="muted" style="margin:0 0 10px;font-size:12px">Last run ${fmtDateTime(lastRun.ran_at)}: ${esc(lastRun.note)}</p>` : ''}
           <div class="actions-row">
             <button class="btn secondary small" data-toggle="${esc(r.key)}" data-next="${r.enabled ? '0' : '1'}">${r.enabled ? 'Turn off' : 'Turn on'}</button>
             <button class="btn secondary small" data-time="${esc(r.key)}" data-current="${esc(r.time)}">Change time</button>
             <button class="btn secondary small" data-send="${esc(r.key)}">Send now</button>
           </div>
-        </div>`).join('')}`;
+        </div>`; }).join('')}`;
       document.querySelectorAll('#emBody button[data-toggle]').forEach(b => b.onclick = async () => {
         try { await api(`/email-reports/${b.dataset.toggle}`, { method: 'PUT', body: { enabled: b.dataset.next === '1' } }); toast('Saved', 'success'); load(); }
         catch (e) { toast(e.message, 'error'); }
@@ -1272,7 +1275,7 @@ async function renderEmails(content) {
       });
       document.querySelectorAll('#emBody button[data-send]').forEach(b => b.onclick = async () => {
         b.disabled = true; b.textContent = 'Sending…';
-        try { await api(`/email-reports/${b.dataset.send}/send-now`, { method: 'POST', body: {} }); toast('Sent', 'success'); }
+        try { const r = await api(`/email-reports/${b.dataset.send}/send-now`, { method: 'POST', body: {} }); toast(r.note, r.sent < r.messages ? 'error' : 'success'); }
         catch (e) { toast(e.message, 'error'); }
         finally { load(); }
       });
