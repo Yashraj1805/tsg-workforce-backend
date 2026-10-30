@@ -261,14 +261,22 @@ async function renderDashboard(content) {
         ${statCard(dash.blocked, 'Blocked attempts')}
       </div>
       <div class="card">
-        <h3>By location</h3>
-        <div class="table-wrap"><table class="data"><thead><tr><th>Location</th><th>Active</th><th>Punched in</th><th>Punched out</th></tr></thead>
-        <tbody>${dash.byLocation.map(r => `<tr><td>${esc(r.location)}</td><td>${r.active}</td><td>${r.punchedIn}</td><td>${r.punchedOut}</td></tr>`).join('') || emptyRow(4)}</tbody></table></div>
+        <h3>By location — who's where</h3>
+        <p class="page-sub">Click a location to see the worker list</p>
+        <div class="table-wrap"><table class="data"><thead><tr><th>Location</th><th>Total workers</th><th>Active</th><th>Punched in</th><th>Punched out</th></tr></thead>
+        <tbody>${dash.byLocation.map(r => `<tr class="clickable" tabindex="0" role="button" data-kind="location" data-value="${esc(r.location)}"><td>${esc(r.location)}</td><td>${r.total}</td><td>${r.active}</td><td>${r.punchedIn}</td><td>${r.punchedOut}</td></tr>`).join('') || emptyRow(5)}</tbody></table></div>
       </div>
       <div class="card">
         <h3>By vendor</h3>
-        <div class="table-wrap"><table class="data"><thead><tr><th>Vendor</th><th>Active</th><th>Punched in</th><th>Punched out</th></tr></thead>
-        <tbody>${dash.byVendor.map(r => `<tr><td>${esc(r.vendor)}</td><td>${r.active}</td><td>${r.punchedIn}</td><td>${r.punchedOut}</td></tr>`).join('') || emptyRow(4)}</tbody></table></div>
+        <p class="page-sub">Total = every status (draft, pending, approved, exited); Active = approved and not exited</p>
+        <div class="table-wrap"><table class="data"><thead><tr><th>Vendor</th><th>Total workers</th><th>Active</th><th>Punched in</th><th>Punched out</th></tr></thead>
+        <tbody>${dash.byVendor.map(r => `<tr class="clickable" tabindex="0" role="button" data-kind="vendor" data-value="${esc(r.vendor)}"><td>${esc(r.vendor)}</td><td>${r.total}</td><td>${r.active}</td><td>${r.punchedIn}</td><td>${r.punchedOut}</td></tr>`).join('') || emptyRow(5)}</tbody></table></div>
+      </div>
+      <div class="card">
+        <h3>By department (vendor-wise)</h3>
+        <p class="page-sub">Active outsourced workers, by job/designation within each vendor</p>
+        <div class="table-wrap"><table class="data"><thead><tr><th>Vendor</th><th>Department</th><th>Active</th></tr></thead>
+        <tbody>${dash.byJob.map(r => `<tr><td>${esc(r.vendor)}</td><td>${esc(r.job)}</td><td>${r.active}</td></tr>`).join('') || emptyRow(3)}</tbody></table></div>
       </div>
       <div class="card">
         <h3>Download reports</h3>
@@ -277,6 +285,7 @@ async function renderDashboard(content) {
           <button class="btn secondary small" id="dlMuster">Muster roll (this month) .xlsx</button>
         </div>
       </div>`;
+    content.querySelectorAll('tr[data-kind]').forEach(tr => bindActivate(tr, () => openWorkforceListDrawer(tr.dataset.kind, tr.dataset.value)));
     document.getElementById('dlAttendance').onclick = async () => {
       const to = new Date().toISOString().slice(0, 10);
       const from = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
@@ -326,6 +335,30 @@ async function renderWorkers(content) {
   document.getElementById('statusFilter').onchange = load;
   document.getElementById('searchBox').oninput = renderRows;
   load();
+}
+
+// "Who's where" drill-down from the Dashboard's by-location / by-vendor tables — every
+// worker (any status) matching that location or vendor name, so a total-headcount click
+// shows exactly who makes up that number, not just the active ones.
+async function openWorkforceListDrawer(kind, value) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  overlay.innerHTML = `<div class="drawer drawer-wide"><button class="close">&times;</button><div class="empty">Loading…</div></div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelector('.close').onclick = () => overlay.remove();
+  try {
+    const all = await api('/workers');
+    const field = kind === 'vendor' ? 'vendor_name' : 'location_name';
+    const rows = all.filter(w => (w[field] || '—') === value).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    overlay.querySelector('.drawer').innerHTML = `
+      <button class="close">&times;</button>
+      <h2 style="margin-bottom:2px">${esc(value)}</h2>
+      <p class="page-sub">${rows.length} worker${rows.length === 1 ? '' : 's'} — ${kind === 'vendor' ? 'this vendor' : 'this location'}</p>
+      <div class="table-wrap"><table class="data"><thead><tr><th>Name</th><th>Mobile</th><th>${kind === 'vendor' ? 'Location' : 'Vendor'}</th><th>Department</th><th>Status</th></tr></thead>
+      <tbody>${rows.map(w => `<tr class="clickable" tabindex="0" role="button" data-id="${esc(w.id)}"><td>${esc(w.name || '(unnamed)')}</td><td>${esc(w.mobile || '—')}</td><td>${esc(kind === 'vendor' ? (w.location_name || '—') : (w.vendor_name || '—'))}</td><td>${esc(w.designation || '—')}</td><td>${badge(w.status)}</td></tr>`).join('') || emptyRow(5, 'No workers found')}</tbody></table></div>`;
+    overlay.querySelector('.close').onclick = () => overlay.remove();
+    overlay.querySelectorAll('tr[data-id]').forEach(tr => bindActivate(tr, () => openWorkerDrawer(tr.dataset.id)));
+  } catch (e) { overlay.querySelector('.drawer').innerHTML = `<button class="close">&times;</button><div class="error-box">${esc(e.message)}</div>`; overlay.querySelector('.close').onclick = () => overlay.remove(); }
 }
 
 async function openWorkerDrawer(id, onChange) {

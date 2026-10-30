@@ -34,15 +34,32 @@ function dashboard(scope, f, day) {
   const punches = db.prepare(`SELECT worker_id, type, result FROM punches WHERE ${sqlDay('ts')} = ?`).all(d).filter(p => ids.has(p.worker_id));
   const inSet = new Set(punches.filter(p => p.result === 'ok' && p.type === 'in').map(p => p.worker_id));
   const outSet = new Set(punches.filter(p => p.result === 'ok' && p.type === 'out').map(p => p.worker_id));
-  const byLocation = {}, byVendor = {};
+  const byLocation = {}, byVendor = {}, byJob = {};
   for (const w of workers) {
-    const k = w.location_name || '—', vk = w.vendor_name || '—';
-    byLocation[k] = byLocation[k] || { location: k, active: 0, punchedIn: 0, punchedOut: 0 };
+    const k = w.location_name || '—', vk = w.vendor_name || '—', jk = w.designation || '—';
+    byLocation[k] = byLocation[k] || { location: k, total: 0, active: 0, punchedIn: 0, punchedOut: 0 };
     byLocation[k].active++;
-    byVendor[vk] = byVendor[vk] || { vendor: vk, active: 0, punchedIn: 0, punchedOut: 0 };
+    byVendor[vk] = byVendor[vk] || { vendor: vk, total: 0, active: 0, punchedIn: 0, punchedOut: 0 };
     byVendor[vk].active++;
+    const jobKey = `${vk}||${jk}`;
+    byJob[jobKey] = byJob[jobKey] || { vendor: vk, job: jk, active: 0 };
+    byJob[jobKey].active++;
     if (inSet.has(w.id)) { byLocation[k].punchedIn++; byVendor[vk].punchedIn++; }
     if (outSet.has(w.id)) { byLocation[k].punchedOut++; byVendor[vk].punchedOut++; }
+  }
+  // Headcount per vendor/location across every status (draft/pending/approved/rejected/
+  // exited), not just active — "how many workers does this vendor have in total", as
+  // opposed to the active/punch counts above which only ever cover approved workers.
+  const fs = filterSql(f);
+  const allRows = db.prepare(`SELECT w.status, l.name AS location_name, v.name AS vendor_name
+      FROM workers w LEFT JOIN locations l ON l.id = w.location_id LEFT JOIN vendors v ON v.id = w.vendor_id
+      WHERE ${scope.sql}${fs.sql}`).all(...scope.args, ...fs.args);
+  for (const r of allRows) {
+    const k = r.location_name || '—', vk = r.vendor_name || '—';
+    byLocation[k] = byLocation[k] || { location: k, total: 0, active: 0, punchedIn: 0, punchedOut: 0 };
+    byLocation[k].total++;
+    byVendor[vk] = byVendor[vk] || { vendor: vk, total: 0, active: 0, punchedIn: 0, punchedOut: 0 };
+    byVendor[vk].total++;
   }
   return {
     date: d,
@@ -53,8 +70,11 @@ function dashboard(scope, f, day) {
     stillIn: [...inSet].filter(id => !outSet.has(id)).length,
     blocked: punches.filter(p => p.result === 'blocked').length,
     pendingApprovals: db.prepare(`SELECT COUNT(*) n FROM workers w LEFT JOIN locations l ON l.id = w.location_id WHERE w.status = 'pending' AND ${scope.sql}${filterSql(f).sql}`).get(...scope.args, ...filterSql(f).args).n,
-    byLocation: Object.values(byLocation),
-    byVendor: Object.values(byVendor),
+    byLocation: Object.values(byLocation).sort((a, b) => b.total - a.total),
+    byVendor: Object.values(byVendor).sort((a, b) => b.total - a.total),
+    // Department (job)-wise outsourced headcount, per vendor — "how many of this
+    // vendor's people are Housekeeping vs Security vs Driver etc.", active workers only.
+    byJob: Object.values(byJob).sort((a, b) => a.vendor.localeCompare(b.vendor) || b.active - a.active),
   };
 }
 
