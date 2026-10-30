@@ -109,6 +109,7 @@ const PORT = process.env.PORT || 4000;
 const server = app.listen(PORT, () => console.log(`TSG Workforce backend ${pkg.version} listening on http://localhost:${PORT} (${process.env.NODE_ENV || 'development'}${process.env.DEV_BYPASS === '1' ? ', DEV_BYPASS on' : ''})`));
 if (process.env.NODE_ENV === 'production' && process.env.DEV_BYPASS === '1') console.warn('[config] DEV_BYPASS is ignored in production');
 if (process.env.NODE_ENV === 'production' && !process.env.WHATSAPP_ACCESS_TOKEN && !process.env.SMS_WEBHOOK_URL) console.warn('[config] production with no WhatsApp/SMS gateway — no worker can receive an OTP');
+if (process.env.SKIP_WORKER_OTP === '1') console.warn('[config] SKIP_WORKER_OTP is on — worker login skips phone-ownership verification (temporary, until the OTP gateway is configured)');
 require('./services/emailReports').startScheduler(); // R15 automatic emails
 backupSvc.startBackupScheduler(); // BRD 9 daily backup (+ nightly data retention)
 

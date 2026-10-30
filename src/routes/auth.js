@@ -20,6 +20,10 @@ const router = express.Router();
 // manpower import) can request an OTP now - remove this block the day real OTP
 // delivery (WhatsApp Cloud API or an SMS gateway) is configured, restoring open
 // self-registration for genuinely new workers.
+// SKIP_WORKER_OTP=1 (2026-10-30, Harpreet): until that gateway exists, every login for
+// an already-registered mobile also echoes its code back the same way, so the app logs
+// the worker in on the mobile number alone — see services/otp.js for what that does
+// and doesn't affect. Pull the env var once real OTP delivery works.
 router.post('/worker/otp/request', async (req, res) => {
   const { mobile, channel } = req.body || {};
   if (!/^\d{10}$/.test(mobile || '')) return res.status(400).json({ error: 'Valid 10-digit mobile number required' });
@@ -42,7 +46,8 @@ router.post('/worker/otp/verify', (req, res) => {
   if (!worker) { auditFailedLogin(mobile, 'worker', 'no account for this number — self-signup restricted'); return res.status(404).json({ error: 'This mobile number is not registered yet. Ask your Team Lead to add you first.' }); }
   if (worker.blacklisted) { auditFailedLogin(mobile, 'worker', 'blacklisted'); return res.status(403).json({ error: 'This Aadhaar/mobile is blacklisted and cannot register again' }); }
 
-  const sid = startSession('worker', worker.id, mobile, `Worker ${worker.name || '(new)'} signed in (status ${worker.status})`);
+  const skipNote = process.env.SKIP_WORKER_OTP === '1' ? ' [OTP gateway bypass active]' : '';
+  const sid = startSession('worker', worker.id, mobile, `Worker ${worker.name || '(new)'} signed in (status ${worker.status})${skipNote}`);
   // 30 days: a 12 h token expired mid-shift and killed the punch-out (and, with it, any
   // offline punch waiting to sync). Revocation is server-side anyway (sessions table).
   const token = issueToken({ sub: worker.id, role: 'worker', mobile, sid }, '30d');

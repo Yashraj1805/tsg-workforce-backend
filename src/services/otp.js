@@ -16,6 +16,14 @@ const LOCK_MS = 15 * 60 * 1000;
 // server is not production — a development-mode server on a public URL must not hand
 // out every worker's OTP just because NODE_ENV wasn't flipped yet.
 const isDev = process.env.NODE_ENV !== 'production' && process.env.DEV_BYPASS === '1';
+// SKIP_WORKER_OTP=1: temporary, production-safe escape hatch for worker login only,
+// until a real WhatsApp/SMS gateway is configured (see server.js's boot warning). It
+// echoes the code back the same way devOtp does, so the app's existing auto-verify
+// path (workerVerifyOtp(result.devOtp) in app.js) logs the worker straight in without
+// ever showing the OTP screen. This removes phone-ownership verification at login —
+// punch-time selfie/face-match/geofence checks are unaffected. Pull the env var the
+// day the gateway works to restore real OTP delivery (2026-10-30, Harpreet).
+const skipWorkerOtp = process.env.SKIP_WORKER_OTP === '1';
 
 db.exec('CREATE TABLE IF NOT EXISTS otp_locks (identifier TEXT NOT NULL, purpose TEXT NOT NULL, locked_until INTEGER NOT NULL, PRIMARY KEY (identifier, purpose))');
 const cols = db.prepare('PRAGMA table_info(otp_codes)').all().map(c => c.name);
@@ -41,7 +49,8 @@ async function generateOtp(identifier, purpose, opts = {}) {
   db.prepare('INSERT OR REPLACE INTO otp_codes (identifier, code, purpose, expires_at, attempts, sent_at) VALUES (?,?,?,?,0,?)')
     .run(identifier, code, purpose, now + OTP_TTL_MS, now);
   const channel = await deliverOtp(identifier, purpose, code, opts.channel);
-  return { sentTo: identifier, channel, devOtp: isDev ? code : undefined, expiresInSeconds: OTP_TTL_MS / 1000, resendInSeconds: RESEND_AFTER_MS / 1000 };
+  const echoCode = isDev || (purpose === 'worker_login' && skipWorkerOtp);
+  return { sentTo: identifier, channel, devOtp: echoCode ? code : undefined, expiresInSeconds: OTP_TTL_MS / 1000, resendInSeconds: RESEND_AFTER_MS / 1000 };
 }
 
 // Awaited so the response can say which channel took it. Delivery failing never fails
