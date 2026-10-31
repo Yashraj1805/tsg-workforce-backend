@@ -61,11 +61,6 @@ async function evaluatePunch(w, input, ts, opts = {}) {
     return { ok: false, status, body: { error, blocked: true, reason, distanceM, accuracy }, punchId };
   };
 
-  // Device binding (R03: one phone per worker; change needs HR approval).
-  if (!opts.kiosk && w.device_id && deviceId && w.device_id !== deviceId) {
-    return block('device_mismatch', 403, 'This device is not the one registered for this worker — ask HR to approve a device change');
-  }
-
   const loc = db.prepare('SELECT * FROM locations WHERE id = ?').get(w.location_id);
   if (!loc) return { ok: false, status: 400, body: { error: 'Worker has no assigned location — ask HR to fix this in the worker record' } };
   // A paired gate tablet is bound to its site and never moves, so its position is the
@@ -76,6 +71,13 @@ async function evaluatePunch(w, input, ts, opts = {}) {
   const { lat, lng } = atGate ? { lat: loc.lat, lng: loc.lng } : input;
   const accuracy = atGate ? null : input.accuracy;
   const distanceM = atGate ? 0 : Math.round(haversineMeters(lat, lng, loc.lat, loc.lng));
+
+  // Device binding (R03: one phone per worker; change needs HR approval). Checked only
+  // after lat/lng/accuracy above are set — block() closes over them, and this is the
+  // earliest check that calls block(), so they must already be initialised by here.
+  if (!opts.kiosk && w.device_id && deviceId && w.device_id !== deviceId) {
+    return block('device_mismatch', 403, 'This device is not the one registered for this worker — ask HR to approve a device change');
+  }
 
   // Fake GPS: the phone reports a mock-location fix → block.
   if (!atGate && integrity && (integrity.mock || integrity.legacyMockSetting)) {
