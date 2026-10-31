@@ -353,6 +353,8 @@ async function renderDashboard(content) {
 
 // ---- Workers ----
 async function renderWorkers(content) {
+  let filterOpts = { locations: [], vendors: [], jobs: [] };
+  try { filterOpts = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
   content.innerHTML = `
     <h2>Workers</h2>
     <p class="page-sub">Within your scope</p>
@@ -368,23 +370,32 @@ async function renderWorkers(content) {
           <option value="exited">Exited</option>
         </select>
       </div>
+      <div class="field"><label>Location</label><select id="locFilter"><option value="">All</option>${filterOpts.locations.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Vendor</label><select id="venFilter"><option value="">All</option>${filterOpts.vendors.map(v => `<option value="${esc(v.name)}">${esc(v.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Job</label><select id="jobFilter"><option value="">All</option>${filterOpts.jobs.map(j => `<option value="${esc(j.name)}">${esc(j.name)}</option>`).join('')}</select></div>
       <div class="field" style="flex:1"><label>Search</label><input id="searchBox" placeholder="Name or mobile" /></div>
     </div>
-    <div class="table-wrap"><table class="data" id="workersTable"><thead><tr><th>Name</th><th>Mobile</th><th>Vendor</th><th>Site</th><th>Status</th></tr></thead><tbody><tr><td colspan="5" class="empty">Loading…</td></tr></tbody></table></div>`;
+    <div class="table-wrap"><table class="data" id="workersTable"><thead><tr><th>Name</th><th>Mobile</th><th>Vendor</th><th>Site</th><th>Department</th><th>Status</th></tr></thead><tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>`;
   let all = [];
   async function load() {
     const status = document.getElementById('statusFilter').value;
     try { all = await api('/workers' + (status ? `?status=${encodeURIComponent(status)}` : '')); renderRows(); }
-    catch (e) { document.querySelector('#workersTable tbody').innerHTML = emptyRow(5, e.message); }
+    catch (e) { document.querySelector('#workersTable tbody').innerHTML = emptyRow(6, e.message); }
   }
   function renderRows() {
     const q = document.getElementById('searchBox').value.trim().toLowerCase();
-    const rows = all.filter(w => !q || (w.name || '').toLowerCase().includes(q) || (w.mobile || '').includes(q));
+    const loc = document.getElementById('locFilter').value;
+    const ven = document.getElementById('venFilter').value;
+    const job = document.getElementById('jobFilter').value;
+    const rows = all.filter(w =>
+      (!q || (w.name || '').toLowerCase().includes(q) || (w.mobile || '').includes(q)) &&
+      (!loc || w.location_name === loc) && (!ven || w.vendor_name === ven) && (!job || w.designation === job));
     const tbody = document.querySelector('#workersTable tbody');
-    tbody.innerHTML = rows.map(w => `<tr class="clickable" tabindex="0" role="button" data-id="${esc(w.id)}"><td>${esc(w.name || '(unnamed)')}</td><td>${esc(w.mobile || '—')}</td><td>${esc(w.vendor_name || '—')}</td><td>${esc(w.location_name || '—')}</td><td>${badge(w.status)}</td></tr>`).join('') || emptyRow(5, 'No workers found');
+    tbody.innerHTML = rows.map(w => `<tr class="clickable" tabindex="0" role="button" data-id="${esc(w.id)}"><td>${esc(w.name || '(unnamed)')}</td><td>${esc(w.mobile || '—')}</td><td>${esc(w.vendor_name || '—')}</td><td>${esc(w.location_name || '—')}</td><td>${esc(w.designation || '—')}</td><td>${badge(w.status)}</td></tr>`).join('') || emptyRow(6, 'No workers found');
     tbody.querySelectorAll('tr[data-id]').forEach(tr => bindActivate(tr, () => openWorkerDrawer(tr.dataset.id, load)));
   }
   document.getElementById('statusFilter').onchange = load;
+  ['locFilter', 'venFilter', 'jobFilter'].forEach(id => { document.getElementById(id).onchange = renderRows; });
   document.getElementById('searchBox').oninput = renderRows;
   load();
 }
@@ -522,33 +533,43 @@ async function openTransferForm(workerId, worker, onDone) {
 // ---- Regularisations (missed punch) ----
 async function renderRegularisations(content) {
   const canDecide = state.permissions.includes('regularisations.decide');
+  let filterOpts = { locations: [], vendors: [] };
+  try { filterOpts = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
   content.innerHTML = `
     <h2>Missed Punch Requests</h2>
     <div class="filter-bar">
       <div class="field"><label>Status</label>
         <select id="regStatus"><option value="pending">Pending</option><option value="">All</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>
       </div>
+      <div class="field"><label>Location</label><select id="regLoc"><option value="">All</option>${filterOpts.locations.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Vendor</label><select id="regVen"><option value="">All</option>${filterOpts.vendors.map(v => `<option value="${esc(v.name)}">${esc(v.name)}</option>`).join('')}</select></div>
     </div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Worker</th><th>Reason</th><th>Raised by</th><th>Status</th>${canDecide ? '<th></th>' : ''}</tr></thead><tbody id="regBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>`;
-  let workerNames = {};
-  try { (await api('/workers')).forEach(w => { workerNames[w.id] = w.name; }); } catch (e) { /* non-fatal */ }
+    <div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Worker</th><th>Vendor</th><th>Site</th><th>Reason</th><th>Raised by</th><th>Status</th>${canDecide ? '<th></th>' : ''}</tr></thead><tbody id="regBody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody></table></div>`;
+  let workerInfo = {};
+  try { (await api('/workers')).forEach(w => { workerInfo[w.id] = w; }); } catch (e) { /* non-fatal */ }
   async function load() {
     const status = document.getElementById('regStatus').value;
+    const loc = document.getElementById('regLoc').value;
+    const ven = document.getElementById('regVen').value;
     try {
-      const rows = await api('/regularisations' + (status ? `?status=${encodeURIComponent(status)}` : ''));
-      document.getElementById('regBody').innerHTML = rows.map(r => `<tr>
-        <td>${esc(r.date)}</td><td>${esc(workerNames[r.worker_id] || r.worker_id)}</td>
+      let rows = await api('/regularisations' + (status ? `?status=${encodeURIComponent(status)}` : ''));
+      rows = rows.filter(r => {
+        const w = workerInfo[r.worker_id];
+        return (!loc || (w && w.location_name === loc)) && (!ven || (w && w.vendor_name === ven));
+      });
+      document.getElementById('regBody').innerHTML = rows.map(r => { const w = workerInfo[r.worker_id]; return `<tr>
+        <td>${esc(r.date)}</td><td>${esc(w ? w.name : r.worker_id)}</td><td>${esc(w ? w.vendor_name || '—' : '—')}</td><td>${esc(w ? w.location_name || '—' : '—')}</td>
         <td>${esc(r.reason)}${r.ai_triage_note ? `<div class="muted" style="font-size:11.5px;margin-top:2px">🤖 ${esc(r.ai_triage_note)}</div>` : ''}</td>
         <td>${esc(r.maker)}</td><td>${badge(r.status)}</td>
         ${canDecide ? `<td>${r.status === 'pending' ? `<button class="btn primary small" data-id="${esc(r.id)}" data-d="approved">Approve</button> <button class="btn danger small" data-id="${esc(r.id)}" data-d="rejected">Reject</button>` : ''}</td>` : ''}
-      </tr>`).join('') || emptyRow(6, 'No requests');
+      </tr>`; }).join('') || emptyRow(8, 'No requests');
       document.querySelectorAll('#regBody button[data-id]').forEach(b => b.onclick = async () => {
         try { await api(`/regularisations/${b.dataset.id}/decide`, { method: 'POST', body: { decision: b.dataset.d } }); toast('Updated', 'success'); load(); }
         catch (e) { toast(e.message, 'error'); }
       });
-    } catch (e) { document.getElementById('regBody').innerHTML = emptyRow(6, e.message); }
+    } catch (e) { document.getElementById('regBody').innerHTML = emptyRow(8, e.message); }
   }
-  document.getElementById('regStatus').onchange = load;
+  ['regStatus', 'regLoc', 'regVen'].forEach(id => { document.getElementById(id).onchange = load; });
   load();
 }
 
@@ -734,27 +755,33 @@ async function renderAttendance(content, tab) {
   return renderAttendanceMonthly(body);
 }
 
-function renderAttendanceDayLog(body) {
+async function renderAttendanceDayLog(body) {
   const today = new Date().toISOString().slice(0, 10);
+  let filterOpts = { locations: [], vendors: [] };
+  try { filterOpts = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
   body.innerHTML = `
     <div class="filter-bar">
       <div class="field"><label>Date</label><input type="date" id="attDate" value="${today}" /></div>
       <div class="field"><label>Result</label><select id="attResult"><option value="">All</option><option value="ok">OK</option><option value="blocked">Blocked</option></select></div>
+      <div class="field"><label>Location</label><select id="attLoc"><option value="">All</option>${filterOpts.locations.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Vendor</label><select id="attVen"><option value="">All</option>${filterOpts.vendors.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('')}</select></div>
     </div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>Worker</th><th>Type</th><th>Result</th><th>Distance</th><th>Reason</th></tr></thead><tbody id="attLogBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>`;
   async function load() {
     const date = document.getElementById('attDate').value;
     const result = document.getElementById('attResult').value;
+    const locationId = document.getElementById('attLoc').value;
+    const vendorId = document.getElementById('attVen').value;
+    const qs = new URLSearchParams({ date, ...(result ? { result } : {}), ...(locationId ? { locationId } : {}), ...(vendorId ? { vendorId } : {}) });
     try {
-      const rows = await api(`/punches?date=${date}${result ? `&result=${result}` : ''}`);
+      const rows = await api(`/punches?${qs}`);
       document.getElementById('attLogBody').innerHTML = rows.map(p => `<tr>
         <td class="t-nowrap">${fmtTime(p.ts)}</td><td>${esc(p.worker_name || p.worker_id)}</td><td>${esc(p.type)}</td>
         <td>${badge(p.result)}</td><td>${p.distance_m != null ? Math.round(p.distance_m) + 'm' : '—'}</td><td>${esc(p.reason || '—')}</td>
       </tr>`).join('') || emptyRow(6, 'No punches for this day');
     } catch (e) { document.getElementById('attLogBody').innerHTML = emptyRow(6, e.message); }
   }
-  document.getElementById('attDate').onchange = load;
-  document.getElementById('attResult').onchange = load;
+  ['attDate', 'attResult', 'attLoc', 'attVen'].forEach(id => { document.getElementById(id).onchange = load; });
   load();
 }
 
@@ -768,17 +795,30 @@ const MUSTER_LEGEND = {
 
 async function renderAttendanceMonthly(body) {
   const month = new Date().toISOString().slice(0, 7);
+  let filterOpts = { locations: [], vendors: [], jobs: [] };
+  try { filterOpts = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
   body.innerHTML = `
     <div class="filter-bar">
       <div class="field"><label>Month</label><input type="month" id="mMonth" value="${month}" /></div>
+      <div class="field"><label>Location</label><select id="mLoc"><option value="">All</option>${filterOpts.locations.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Vendor</label><select id="mVen"><option value="">All</option>${filterOpts.vendors.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Job</label><select id="mJob"><option value="">All</option>${filterOpts.jobs.map(j => `<option value="${esc(j.id)}">${esc(j.name)}</option>`).join('')}</select></div>
       <button class="btn secondary small" id="mDownload">Download .xlsx</button>
     </div>
     <div class="muster-legend">${Object.entries(MUSTER_LEGEND).map(([k, v]) => `<span class="muster-chip ${v.cls}">${esc(k || '—')} ${esc(v.label)}</span>`).join('')}</div>
     <div class="table-wrap" id="musterWrap"><div class="empty">Loading…</div></div>`;
+  function filterQs() {
+    const p = {};
+    const locationId = document.getElementById('mLoc').value; if (locationId) p.locationId = locationId;
+    const vendorId = document.getElementById('mVen').value; if (vendorId) p.vendorId = vendorId;
+    const jobId = document.getElementById('mJob').value; if (jobId) p.jobId = jobId;
+    return new URLSearchParams(p).toString();
+  }
   async function load() {
     const m = document.getElementById('mMonth').value;
+    const qs = filterQs();
     try {
-      const data = await api(`/reports/muster?month=${m}`);
+      const data = await api(`/reports/muster?month=${m}${qs ? `&${qs}` : ''}`);
       const days = Array.from({ length: data.days }, (_, i) => i + 1);
       document.getElementById('musterWrap').innerHTML = `
         <table class="data muster-table">
@@ -793,10 +833,11 @@ async function renderAttendanceMonthly(body) {
       document.querySelectorAll('.muster-name-col.clickable').forEach((td, i) => bindActivate(td, () => openWorkerMonthDrawer(data.rows[i], m, data.days)));
     } catch (e) { document.getElementById('musterWrap').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
   }
-  document.getElementById('mMonth').onchange = load;
+  ['mMonth', 'mLoc', 'mVen', 'mJob'].forEach(id => { document.getElementById(id).onchange = load; });
   document.getElementById('mDownload').onclick = async () => {
     const m = document.getElementById('mMonth').value;
-    try { downloadBlob(await apiBlob(`/reports/muster.xlsx?month=${m}`), `muster-roll-${m}.xlsx`); } catch (e) { toast(e.message, 'error'); }
+    const qs = filterQs();
+    try { downloadBlob(await apiBlob(`/reports/muster.xlsx?month=${m}${qs ? `&${qs}` : ''}`), `muster-roll-${m}.xlsx`); } catch (e) { toast(e.message, 'error'); }
   };
   load();
 }
@@ -852,13 +893,22 @@ async function openWorkerMonthDrawer(row, month, totalDays) {
 // ---- Exceptions (blocked / flagged punches, with reference-photo confirm) ----
 async function renderExceptions(content) {
   const canConfirmRef = state.permissions.includes('workers.approve');
+  let filterOpts = { locations: [], vendors: [] };
+  try { filterOpts = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
   content.innerHTML = `
     <h2>Exceptions</h2>
     <p class="page-sub">Blocked punch attempts, last 14 days</p>
+    <div class="filter-bar">
+      <div class="field"><label>Location</label><select id="excLoc"><option value="">All</option>${filterOpts.locations.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Vendor</label><select id="excVen"><option value="">All</option>${filterOpts.vendors.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('')}</select></div>
+    </div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Photo</th><th>Time</th><th>Worker</th><th>Reason</th><th>Risk</th>${canConfirmRef ? '<th></th>' : ''}</tr></thead><tbody id="excBody"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody></table></div>`;
   async function load() {
+    const locationId = document.getElementById('excLoc').value;
+    const vendorId = document.getElementById('excVen').value;
+    const qs = new URLSearchParams({ result: 'blocked', ...(locationId ? { locationId } : {}), ...(vendorId ? { vendorId } : {}) });
     try {
-      const rows = await api('/punches?result=blocked');
+      const rows = await api(`/punches?${qs}`);
       document.getElementById('excBody').innerHTML = rows.map(p => `<tr>
         <td>${p.selfie_data_url ? `<img src="${esc(p.selfie_data_url)}" style="width:40px;height:40px;border-radius:6px;object-fit:cover" />` : '—'}</td>
         <td class="t-nowrap">${fmtDateTime(p.ts)}</td><td>${esc(p.worker_name || p.worker_id)}</td><td>${esc(p.reason || p.face_match_note || '—')}</td><td>${p.risk_score != null ? p.risk_score : '—'}</td>
@@ -871,6 +921,7 @@ async function renderExceptions(content) {
       });
     } catch (e) { document.getElementById('excBody').innerHTML = emptyRow(6, e.message); }
   }
+  ['excLoc', 'excVen'].forEach(id => { document.getElementById(id).onchange = load; });
   load();
 }
 
@@ -922,19 +973,37 @@ function computeTimeGuardFlags({ workers, locations, punches, regularisations })
   return flags.sort((a, b) => b.ts - a.ts);
 }
 async function renderTimeGuard(content) {
-  content.innerHTML = `<h2>TimeGuard</h2><p class="page-sub">Pattern-based flags from the last 30 days — not proof, a prompt to look closer</p><div id="tgBody" class="empty">Loading…</div>`;
+  let filterOpts = { locations: [], vendors: [] };
+  try { filterOpts = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
+  content.innerHTML = `<h2>TimeGuard</h2><p class="page-sub">Pattern-based flags from the last 30 days — not proof, a prompt to look closer</p>
+    <div class="filter-bar">
+      <div class="field"><label>Location</label><select id="tgLoc"><option value="">All</option>${filterOpts.locations.map(l => `<option value="${esc(l.name)}">${esc(l.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Vendor</label><select id="tgVen"><option value="">All</option>${filterOpts.vendors.map(v => `<option value="${esc(v.name)}">${esc(v.name)}</option>`).join('')}</select></div>
+    </div>
+    <div id="tgBody" class="empty">Loading…</div>`;
   try {
     const since = Date.now() - 30 * 86400000;
     const [workers, locations, punches, regularisations] = await Promise.all([
       api('/workers'), api('/locations'), api(`/punches?from=${since}&limit=1000`), api('/regularisations'),
     ]);
     const nameById = Object.fromEntries(workers.map(w => [w.id, w.name || w.mobile]));
-    const flags = computeTimeGuardFlags({ workers, locations, punches, regularisations });
-    document.getElementById('tgBody').innerHTML = flags.length ? flags.map(f => `
-      <div class="card" style="border-left:4px solid var(--${f.severity === 'bad' ? 'bad' : 'warn'})">
-        <strong>${esc(nameById[f.workerId] || f.workerId)}</strong> <span class="muted">· ${fmtDateTime(f.ts)}</span>
-        <p style="margin:4px 0 0">${f.message}</p>
-      </div>`).join('') : '<div class="empty">No flags right now</div>';
+    const workerById = Object.fromEntries(workers.map(w => [w.id, w]));
+    const allFlags = computeTimeGuardFlags({ workers, locations, punches, regularisations });
+    function renderFlags() {
+      const loc = document.getElementById('tgLoc').value;
+      const ven = document.getElementById('tgVen').value;
+      const flags = allFlags.filter(f => {
+        const w = workerById[f.workerId];
+        return (!loc || (w && w.location_name === loc)) && (!ven || (w && w.vendor_name === ven));
+      });
+      document.getElementById('tgBody').innerHTML = flags.length ? flags.map(f => `
+        <div class="card" style="border-left:4px solid var(--${f.severity === 'bad' ? 'bad' : 'warn'})">
+          <strong>${esc(nameById[f.workerId] || f.workerId)}</strong> <span class="muted">· ${fmtDateTime(f.ts)}</span>
+          <p style="margin:4px 0 0">${f.message}</p>
+        </div>`).join('') : '<div class="empty">No flags right now</div>';
+    }
+    ['tgLoc', 'tgVen'].forEach(id => { document.getElementById(id).onchange = renderFlags; });
+    renderFlags();
   } catch (e) { document.getElementById('tgBody').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
 }
 
@@ -944,11 +1013,18 @@ async function renderRequests(content) {
   const canComplete = state.permissions.includes('workers.manage');
   content.innerHTML = `
     <h2>Transfer &amp; Exit Requests</h2>
-    <div class="actions-row" style="margin-bottom:14px">${canRaise ? '<button class="btn primary small" id="raiseBtn">+ Raise request</button>' : ''}</div>
+    <div class="filter-bar">
+      <div class="field"><label>Status</label><select id="reqStatus"><option value="">All</option><option value="pending">Pending</option><option value="accepted">Accepted</option><option value="completed">Completed</option><option value="rejected">Rejected</option></select></div>
+      <div class="field"><label>Type</label><select id="reqType"><option value="">All</option><option value="transfer">Transfer</option><option value="exit">Exit</option></select></div>
+      ${canRaise ? '<button class="btn primary small" id="raiseBtn" style="align-self:flex-end">+ Raise request</button>' : ''}
+    </div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Worker</th><th>Type</th><th>Detail</th><th>Reason</th><th>Status</th><th>Raised by</th><th></th></tr></thead><tbody id="reqBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody></table></div>`;
   async function load() {
+    const status = document.getElementById('reqStatus').value;
+    const type = document.getElementById('reqType').value;
     try {
-      const rows = await api('/worker-requests');
+      let rows = await api('/worker-requests');
+      rows = rows.filter(r => (!status || r.status === status) && (!type || r.type === type));
       document.getElementById('reqBody').innerHTML = rows.map(r => `<tr>
         <td>${esc(r.worker_name)}</td><td>${esc(r.type)}</td>
         <td>${r.type === 'transfer' ? `→ ${esc(r.to_location || r.to_vendor || '—')}` : esc(r.exit_date || '—')}</td>
@@ -972,6 +1048,7 @@ async function renderRequests(content) {
   }
   const raiseBtn = document.getElementById('raiseBtn');
   if (raiseBtn) raiseBtn.onclick = () => openRaiseRequestForm(load);
+  ['reqStatus', 'reqType'].forEach(id => { document.getElementById(id).onchange = load; });
   load();
 }
 
@@ -1080,22 +1157,31 @@ async function renderReports(content) {
         <div class="field"><label>To</label><input type="date" id="rTo" value="${today}" /></div>
         <div class="field"><label>Location</label><select id="rLoc"><option value="">All</option>${filters.locations.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select></div>
         <div class="field"><label>Vendor</label><select id="rVen"><option value="">All</option>${filters.vendors.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Job</label><select id="rJob"><option value="">All</option>${filters.jobs.map(j => `<option value="${esc(j.id)}">${esc(j.name)}</option>`).join('')}</select></div>
         <button class="btn primary small" id="dlAtt">Download .xlsx</button>
       </div>
     </div>
     <div class="card">
       <h3>Muster roll (month)</h3>
-      <div class="filter-bar"><div class="field"><label>Month</label><input type="month" id="rMonth" value="${month}" /></div><button class="btn primary small" id="dlMuster">Download .xlsx</button></div>
+      <div class="filter-bar">
+        <div class="field"><label>Month</label><input type="month" id="rMonth" value="${month}" /></div>
+        <div class="field"><label>Location</label><select id="rmLoc"><option value="">All</option>${filters.locations.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Vendor</label><select id="rmVen"><option value="">All</option>${filters.vendors.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Job</label><select id="rmJob"><option value="">All</option>${filters.jobs.map(j => `<option value="${esc(j.id)}">${esc(j.name)}</option>`).join('')}</select></div>
+        <button class="btn primary small" id="dlMuster">Download .xlsx</button>
+      </div>
     </div>`;
   document.getElementById('dlAtt').onclick = async () => {
     const from = document.getElementById('rFrom').value, to = document.getElementById('rTo').value;
-    const locationId = document.getElementById('rLoc').value, vendorId = document.getElementById('rVen').value;
-    const qs = new URLSearchParams({ from, to, ...(locationId ? { locationId } : {}), ...(vendorId ? { vendorId } : {}) });
+    const locationId = document.getElementById('rLoc').value, vendorId = document.getElementById('rVen').value, jobId = document.getElementById('rJob').value;
+    const qs = new URLSearchParams({ from, to, ...(locationId ? { locationId } : {}), ...(vendorId ? { vendorId } : {}), ...(jobId ? { jobId } : {}) });
     try { downloadBlob(await apiBlob(`/reports/attendance.xlsx?${qs}`), `attendance-${from}-to-${to}.xlsx`); } catch (e) { toast(e.message, 'error'); }
   };
   document.getElementById('dlMuster').onclick = async () => {
     const m = document.getElementById('rMonth').value;
-    try { downloadBlob(await apiBlob(`/reports/muster.xlsx?month=${m}`), `muster-roll-${m}.xlsx`); } catch (e) { toast(e.message, 'error'); }
+    const locationId = document.getElementById('rmLoc').value, vendorId = document.getElementById('rmVen').value, jobId = document.getElementById('rmJob').value;
+    const qs = new URLSearchParams({ month: m, ...(locationId ? { locationId } : {}), ...(vendorId ? { vendorId } : {}), ...(jobId ? { jobId } : {}) });
+    try { downloadBlob(await apiBlob(`/reports/muster.xlsx?${qs}`), `muster-roll-${m}.xlsx`); } catch (e) { toast(e.message, 'error'); }
   };
 }
 
@@ -1372,11 +1458,27 @@ async function renderEmails(content) {
 // ---- Audit log ----
 async function renderAudit(content) {
   content.innerHTML = `<h2>Audit Log</h2><p class="page-sub">Last 300 actions</p>
+    <div class="filter-bar">
+      <div class="field"><label>Action</label><select id="auAction"><option value="">All</option></select></div>
+      <div class="field" style="flex:1"><label>Search</label><input id="auSearch" placeholder="User or detail text" /></div>
+    </div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead><tbody id="auBody"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table></div>`;
+  let all = [];
   try {
-    const rows = await api('/audit');
+    all = await api('/audit');
+    const actions = [...new Set(all.map(a => a.action))].sort();
+    document.getElementById('auAction').insertAdjacentHTML('beforeend', actions.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join(''));
+  } catch (e) { document.getElementById('auBody').innerHTML = emptyRow(4, e.message); return; }
+  function renderRows() {
+    const action = document.getElementById('auAction').value;
+    const q = document.getElementById('auSearch').value.trim().toLowerCase();
+    const rows = all.filter(a => (!action || a.action === action) &&
+      (!q || (a.user || '').toLowerCase().includes(q) || (a.detail || '').toLowerCase().includes(q)));
     document.getElementById('auBody').innerHTML = rows.map(a => `<tr><td class="t-nowrap">${fmtDateTime(a.ts)}</td><td class="t-nowrap">${esc(a.user)}</td><td class="t-nowrap">${esc(a.action)}</td><td>${esc(a.detail || '—')}</td></tr>`).join('') || emptyRow(4, 'No entries');
-  } catch (e) { document.getElementById('auBody').innerHTML = emptyRow(4, e.message); }
+  }
+  document.getElementById('auAction').onchange = renderRows;
+  document.getElementById('auSearch').oninput = renderRows;
+  renderRows();
 }
 
 boot();

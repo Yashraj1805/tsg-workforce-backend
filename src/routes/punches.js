@@ -343,6 +343,8 @@ router.get('/', requirePermission('punches.read'), (req, res) => {
   if (date) { sql += ` AND ${sqlDay('punches.ts')} = ?`; args.push(date); }
   if (req.query.from) { sql += ' AND punches.ts >= ?'; args.push(Number(req.query.from)); }
   if (req.query.to) { sql += ' AND punches.ts < ?'; args.push(Number(req.query.to)); }
+  if (req.query.vendorId) { sql += ' AND punches.vendor_id = ?'; args.push(req.query.vendorId); }
+  if (req.query.locationId) { sql += ' AND punches.location_id = ?'; args.push(req.query.locationId); }
   if (result) { sql += ' AND punches.result = ?'; args.push(result); }
   if (req.query.minRisk) { sql += ' AND punches.risk_score >= ?'; args.push(Number(req.query.minRisk)); }
   // Blocked/risky lists for dashboards default to the last 14 days unless a filter narrows them.
