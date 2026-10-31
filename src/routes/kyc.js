@@ -117,6 +117,15 @@ router.get('/digilocker/:id/complete', requireAuth('worker'), async (req, res) =
     db.prepare("UPDATE digilocker_requests SET status = 'complete' WHERE id = ?").run(req.params.id);
     addAudit(req.auth.mobile, 'aadhaar_verified', `Aadhaar verified via DigiLocker (${reqRow.provider || 'setu'}), masked ${masked}`);
 
+    // Bulk-import cross-check: HR may have entered the last 4 Aadhaar digits from the
+    // worker's paperwork at import time. A mismatch against what DigiLocker just verified
+    // doesn't block the worker (could just be an HR typo) - flagged for HR to resolve
+    // before approving instead (see workers.js POST /:id/approve).
+    if (me.expected_aadhaar_last4 && me.expected_aadhaar_last4 !== last4) {
+      db.prepare('UPDATE workers SET aadhaar_last4_mismatch = 1 WHERE id = ?').run(req.auth.sub);
+      addAudit(req.auth.mobile, 'aadhaar_last4_mismatch', `DigiLocker-verified Aadhaar ends ${last4}, but HR entered ${me.expected_aadhaar_last4} at bulk import — needs HR review before approval`);
+    }
+
     // 2026-10-15 (Harpreet): there's no separate live-selfie step anymore — the Aadhaar
     // photo IS the worker's photo everywhere (HR screens, gate-check, duplicate-face
     // detection, punch-in match). COALESCE so a photo from some other path is never

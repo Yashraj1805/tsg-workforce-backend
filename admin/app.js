@@ -185,6 +185,11 @@ const NAV = [
   { key: 'audit', label: 'Audit Log', perms: ['audit.read'], icon: 'list' },
   { key: 'users', label: 'Admin Users', perms: ['users.manage'], icon: 'settings' },
 ];
+// Mirrors src/registrationOptions.js — small and stable enough to keep in sync by hand,
+// same as this file already does for the muster-grid legend codes.
+const EDUCATION_LABELS = { none: 'No schooling', primary: 'Up to 5th', '8th': '8th pass', '10th': '10th pass', '12th': '12th pass', iti: 'ITI / Diploma', graduate: 'Graduate or above' };
+const EXPERIENCE_LABELS = { '0-1': 'New / under 1 year', '1-3': '1 – 3 years', '3-5': '3 – 5 years', '5+': 'More than 5 years' };
+
 function navVisible(n) { return n.anyPerms ? n.anyPerms.some(p => state.permissions.includes(p)) : n.perms.every(p => state.permissions.includes(p)); }
 function defaultRoute() { const first = NAV.find(navVisible); return first ? first.key : 'dashboard'; }
 
@@ -424,7 +429,7 @@ async function openBulkImportDrawer(onChange) {
   const overlay = document.createElement('div'); overlay.className = 'overlay';
   overlay.innerHTML = `<div class="drawer drawer-wide"><button class="close">&times;</button>
     <h2>Bulk import workers</h2>
-    <p class="page-sub">Name and mobile are required; vendor, site and job are matched by exact name. Each worker still has to verify their own Aadhaar + PAN on their phone — this only fills in the rest.</p>
+    <p class="page-sub">Name and mobile are required. Vendor, site and job are matched by exact name; date of joining, qualification, experience, emergency contact and vendor code are optional. Aadhaar last-4 (optional, never the full number) is cross-checked once the worker verifies on their own phone — a mismatch doesn't block them, just flags the record for HR to review before approving. Each worker still has to verify their own Aadhaar + PAN themselves.</p>
     <div class="actions-row" style="margin-bottom:16px">
       <button type="button" class="btn secondary small" id="biTemplate">Download template (.xlsx)</button>
       <label class="btn primary small" style="cursor:pointer">Choose file<input type="file" id="biFile" accept=".xlsx" style="display:none" /></label>
@@ -528,13 +533,18 @@ async function openWorkerDrawer(id, onChange) {
       <button class="close">&times;</button>
       <h2 style="margin-bottom:6px">${esc(w.name || 'Worker')}</h2>
       ${badge(w.status)}
+      ${w.aadhaar_last4_mismatch ? `<div class="error-box" style="margin-top:10px">⚠️ Aadhaar last-4 entered at bulk import doesn't match the Aadhaar verified via DigiLocker — compare and resolve before approving.</div>` : ''}
       ${docsHtml}
       <dl class="kv">
         <dt>Mobile</dt><dd>${esc(w.mobile || '—')}</dd>
-        <dt>Vendor</dt><dd>${esc(w.vendor ? w.vendor.name : '—')}</dd>
+        <dt>Vendor</dt><dd>${esc(w.vendor ? w.vendor.name : '—')}${w.vendor_code ? ` (code: ${esc(w.vendor_code)})` : ''}</dd>
         <dt>Site</dt><dd>${esc(w.location ? w.location.name : '—')}</dd>
         <dt>Designation</dt><dd>${esc(w.designation || '—')}</dd>
-        <dt>Aadhaar</dt><dd>${esc(w.aadhaar_masked || (w.aadhaar_verified ? 'verified' : 'not verified'))}</dd>
+        <dt>Date of joining</dt><dd>${esc(w.doj || '—')}</dd>
+        <dt>Qualification</dt><dd>${esc(EDUCATION_LABELS[w.qualification] || w.qualification || '—')}</dd>
+        <dt>Experience</dt><dd>${esc(EXPERIENCE_LABELS[w.experience] || w.experience || '—')}</dd>
+        <dt>Emergency contact</dt><dd>${esc(w.emergency_contact || '—')}</dd>
+        <dt>Aadhaar</dt><dd>${esc(w.aadhaar_masked || (w.aadhaar_verified ? 'verified' : 'not verified'))}${w.expected_aadhaar_last4 ? ` <span class="muted">(HR entered at import: …${esc(w.expected_aadhaar_last4)})</span>` : ''}</dd>
         <dt>PAN</dt><dd>${esc(w.pan_number || (w.pan_verified ? 'verified' : 'not verified'))}</dd>
         <dt>Reporting mgr</dt><dd>${esc(w.reporting_manager_name || '—')}${w.reporting_manager_email ? ` (${esc(w.reporting_manager_email)})` : ''}</dd>
         ${w.send_back_reason ? `<dt>Sent back</dt><dd>${esc(w.send_back_reason)}</dd>` : ''}
@@ -560,11 +570,17 @@ async function openWorkerDrawer(id, onChange) {
         await api(`/workers/${id}/approve`, { method: 'POST', body: { reportingManagerName: v.name, reportingManagerEmail: v.email } });
         toast('Approved', 'success'); overlay.remove(); onChange && onChange();
       } catch (e) {
-        if (!/face review/i.test(e.message)) throw e;
-        openFormDialog(e.message, [{ id: 'note', label: 'Note confirming you compared the photos', type: 'text', required: true }], async (v2) => {
-          await api(`/workers/${id}/approve`, { method: 'POST', body: { reportingManagerName: v.name, reportingManagerEmail: v.email, faceReviewNote: v2.note } });
-          toast('Approved', 'success'); overlay.remove(); onChange && onChange();
-        }, 'Approve');
+        if (/needs hr review/i.test(e.message)) {
+          openFormDialog(e.message, [{ id: 'note', label: 'Note confirming you compared the photos', type: 'text', required: true }], async (v2) => {
+            await api(`/workers/${id}/approve`, { method: 'POST', body: { reportingManagerName: v.name, reportingManagerEmail: v.email, faceReviewNote: v2.note } });
+            toast('Approved', 'success'); overlay.remove(); onChange && onChange();
+          }, 'Approve');
+        } else if (/aadhaar last-4/i.test(e.message)) {
+          openFormDialog(e.message, [{ id: 'note', label: 'Note confirming you checked the Aadhaar mismatch', type: 'text', required: true }], async (v2) => {
+            await api(`/workers/${id}/approve`, { method: 'POST', body: { reportingManagerName: v.name, reportingManagerEmail: v.email, aadhaarMismatchNote: v2.note } });
+            toast('Approved', 'success'); overlay.remove(); onChange && onChange();
+          }, 'Approve');
+        } else throw e;
       }
     }, 'Approve');
     const sb = overlay.querySelector('#actSendBack'); if (sb) sb.onclick = () => openReasonPrompt('Reason to send back to the worker', (reason) => act('send-back', { reason }));
@@ -1164,12 +1180,18 @@ function openFormDialog(title, fields, onSubmit, submitLabel) {
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelector('.close').onclick = () => overlay.remove();
   const first = overlay.querySelector('input, select'); if (first) first.focus();
-  document.getElementById('fdForm').onsubmit = async (e) => {
+  // Scoped to this dialog's own overlay, not document.getElementById('fdForm') — every
+  // dialog shares that id, so a nested dialog (opened from inside another's onSubmit,
+  // before the outer one's overlay.remove() has run) would otherwise have its handler
+  // attached to the OUTER, about-to-be-removed form instead of the one the user can see,
+  // leaving the visible form with no submit handler at all (a plain, unprevented form
+  // submit then just reloads the page instead of calling the API).
+  overlay.querySelector('#fdForm').onsubmit = async (e) => {
     e.preventDefault();
     const values = {};
-    for (const f of fields) { const el = document.getElementById('fd_' + f.id); values[f.id] = f.type === 'checkbox' ? el.checked : el.value; }
+    for (const f of fields) { const el = overlay.querySelector('#fd_' + f.id); values[f.id] = f.type === 'checkbox' ? el.checked : el.value; }
     try { await onSubmit(values); overlay.remove(); }
-    catch (err) { document.getElementById('fdErr').innerHTML = `<div class="error-box">${esc(err.message)}</div>`; }
+    catch (err) { overlay.querySelector('#fdErr').innerHTML = `<div class="error-box">${esc(err.message)}</div>`; }
   };
   return overlay;
 }

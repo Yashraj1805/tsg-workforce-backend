@@ -265,9 +265,15 @@ router.get('/bulk-import/template.xlsx', requirePermission('workers.create_direc
       { header: 'Vendor', key: 'vendor', width: 24 },
       { header: 'Site', key: 'site', width: 24 },
       { header: 'Job / Department', key: 'job', width: 22 },
+      { header: 'Date of Joining', key: 'doj', width: 16 },
+      { header: 'Qualification', key: 'qualification', width: 20 },
+      { header: 'Experience', key: 'experience', width: 18 },
+      { header: 'Emergency Contact', key: 'emergencyContact', width: 18 },
+      { header: 'Vendor Code', key: 'vendorCode', width: 14 },
+      { header: 'Aadhaar Last 4 Digits', key: 'aadhaarLast4', width: 20 },
     ],
     rows: [
-      { name: 'Ramesh Kumar (example — delete this row)', mobile: '9876543210', vendor: 'Exact vendor name, as in Vendors / Sites / Jobs', site: 'Exact site name, as in Vendors / Sites / Jobs', job: 'Exact job name, as in Vendors / Sites / Jobs' },
+      { name: 'Ramesh Kumar (example — delete this row)', mobile: '9876543210', vendor: 'Exact vendor name, as in Vendors / Sites / Jobs', site: 'Exact site name, as in Vendors / Sites / Jobs', job: 'Exact job name, as in Vendors / Sites / Jobs', doj: '2026-11-01', qualification: EDUCATION.map(e => e.en).join(' / '), experience: EXPERIENCE.map(e => e.en).join(' / '), emergencyContact: '9876500000', vendorCode: 'optional', aadhaarLast4: 'optional, last 4 digits only — never the full number' },
     ],
   }]);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -284,12 +290,34 @@ async function parseBulkExcel(fileBase64) {
   const rows = [];
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return; // header row
-    const cell = (c) => { const v = row.getCell(c).value; return v == null ? '' : String(v).trim(); };
-    const name = cell(1), mobile = cell(2), vendor = cell(3), location = cell(4), job = cell(5);
+    const cell = (c) => { const v = row.getCell(c).value; return v == null ? '' : v; };
+    const str = (c) => { const v = cell(c); return v instanceof Date ? v : String(v).trim(); };
+    const name = str(1), mobile = str(2), vendor = str(3), location = str(4), job = str(5),
+      doj = str(6), qualification = str(7), experience = str(8), emergencyContact = str(9), vendorCode = str(10), aadhaarLast4 = str(11);
     if (!name && !mobile && !vendor && !location && !job) return; // fully blank row
-    rows.push({ rowNumber, name, mobile, vendor, location, job });
+    rows.push({ rowNumber, name, mobile, vendor, location, job, doj, qualification, experience, emergencyContact, vendorCode, aadhaarLast4 });
   });
   return rows;
+}
+
+// Matches free-typed Excel text against a registrationOptions list by id ("graduate") or
+// its friendly label ("Graduate or above") - HR fills what reads naturally, not the code.
+function matchOption(list, raw) {
+  if (!raw) return { value: null, error: null };
+  const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const n = norm(raw);
+  const hit = list.find(o => norm(o.id) === n || norm(o.en) === n || norm(o.hi) === n);
+  return hit ? { value: hit.id, error: null } : { value: null, error: `"${raw}" not recognised — use one of: ${list.map(o => o.en).join(', ')}` };
+}
+function parseDojCell(raw) {
+  if (!raw) return { value: null, error: null };
+  if (raw instanceof Date) return { value: raw.toISOString().slice(0, 10), error: null };
+  const s = String(raw).trim();
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (m) return { value: `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`, error: null };
+  m = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(s);
+  if (m) return { value: `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`, error: null }; // DD/MM/YYYY
+  return { value: null, error: `Date of joining "${s}" not recognised — use YYYY-MM-DD` };
 }
 
 router.post('/bulk-import/preview', requirePermission('workers.create_direct'), async (req, res) => {
@@ -309,21 +337,36 @@ router.post('/bulk-import/preview', requirePermission('workers.create_direct'), 
   const seenMobiles = new Set();
   const rows = rawRows.map(r => {
     const errors = [];
-    if (!r.name) errors.push('Name is missing');
-    if (!/^\d{10}$/.test(r.mobile)) errors.push('Mobile must be a 10-digit number');
+    const name = String(r.name || '');
+    const mobile = String(r.mobile || '');
+    if (!name) errors.push('Name is missing');
+    if (!/^\d{10}$/.test(mobile)) errors.push('Mobile must be a 10-digit number');
     let vendorId = null, locationId = null, jobId = null;
-    if (r.vendor) { const v = vMap.get(r.vendor.toLowerCase()); if (!v) errors.push(`Vendor "${r.vendor}" not found`); else vendorId = v.id; }
-    if (r.location) { const l = lMap.get(r.location.toLowerCase()); if (!l) errors.push(`Site "${r.location}" not found`); else locationId = l.id; }
-    if (r.job) { const j = jMap.get(r.job.toLowerCase()); if (!j) errors.push(`Job "${r.job}" not found — add it in Masters first`); else jobId = j.id; }
+    if (r.vendor) { const v = vMap.get(String(r.vendor).toLowerCase()); if (!v) errors.push(`Vendor "${r.vendor}" not found`); else vendorId = v.id; }
+    if (r.location) { const l = lMap.get(String(r.location).toLowerCase()); if (!l) errors.push(`Site "${r.location}" not found`); else locationId = l.id; }
+    if (r.job) { const j = jMap.get(String(r.job).toLowerCase()); if (!j) errors.push(`Job "${r.job}" not found — add it in Masters first`); else jobId = j.id; }
+    const doj = parseDojCell(r.doj); if (doj.error) errors.push(doj.error);
+    const qualification = matchOption(EDUCATION, r.qualification); if (qualification.error) errors.push(qualification.error);
+    const experience = matchOption(EXPERIENCE, r.experience); if (experience.error) errors.push(experience.error);
+    const emergencyContact = String(r.emergencyContact || '');
+    if (emergencyContact && !/^\d{10}$/.test(emergencyContact)) errors.push('Emergency contact must be a 10-digit number');
+    const vendorCode = String(r.vendorCode || '') || null;
+    const aadhaarLast4 = String(r.aadhaarLast4 || '');
+    if (aadhaarLast4 && !/^\d{4}$/.test(aadhaarLast4)) errors.push('Aadhaar last-4 must be exactly 4 digits (never the full number)');
     let status = 'ok';
-    if (r.mobile && /^\d{10}$/.test(r.mobile)) {
-      const existing = db.prepare('SELECT status, blacklisted FROM workers WHERE mobile = ?').get(r.mobile);
+    if (/^\d{10}$/.test(mobile)) {
+      const existing = db.prepare('SELECT status, blacklisted FROM workers WHERE mobile = ?').get(mobile);
       if (existing) { status = 'duplicate'; errors.push(existing.blacklisted ? 'This mobile is blacklisted' : `Already registered (status: ${existing.status})`); }
-      else if (seenMobiles.has(r.mobile)) { status = 'error'; errors.push('Duplicate mobile within this file'); }
-      seenMobiles.add(r.mobile);
+      else if (seenMobiles.has(mobile)) { status = 'error'; errors.push('Duplicate mobile within this file'); }
+      seenMobiles.add(mobile);
     }
     if (errors.length && status === 'ok') status = 'error';
-    return { rowNumber: r.rowNumber, name: r.name, mobile: r.mobile, vendor: r.vendor, location: r.location, job: r.job, vendorId, locationId, jobId, status, errors };
+    return {
+      rowNumber: r.rowNumber, name, mobile, vendor: r.vendor, location: r.location, job: r.job, vendorId, locationId, jobId,
+      doj: doj.value, qualification: qualification.value, experience: experience.value,
+      emergencyContact: emergencyContact || null, vendorCode, aadhaarLast4: aadhaarLast4 || null,
+      status, errors,
+    };
   });
   res.json({ rows, counts: { total: rows.length, ok: rows.filter(r => r.status === 'ok').length, duplicate: rows.filter(r => r.status === 'duplicate').length, error: rows.filter(r => r.status === 'error').length } });
 });
@@ -345,9 +388,11 @@ router.post('/bulk-import/commit', requirePermission('workers.create_direct'), (
       if (r.jobId) { const job = db.prepare('SELECT * FROM jobs WHERE id = ? AND active = 1').get(r.jobId); if (job) { job_id = job.id; designation = job.name; } }
       const vendor_id = r.vendorId && db.prepare('SELECT 1 FROM vendors WHERE id = ?').get(r.vendorId) ? r.vendorId : null;
       const id = crypto.randomUUID();
-      db.prepare(`INSERT INTO workers (id, mobile, name, job_id, designation, vendor_id, location_id, status, kyc_status, registered_by, created_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(id, r.mobile, r.name.trim(), job_id, designation, vendor_id, location_id, 'draft', 'pending', req.auth.email, Date.now());
+      db.prepare(`INSERT INTO workers (id, mobile, name, job_id, designation, vendor_id, location_id, status, kyc_status, registered_by, created_at,
+          doj, qualification, experience, emergency_contact, vendor_code, expected_aadhaar_last4)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(id, r.mobile, r.name.trim(), job_id, designation, vendor_id, location_id, 'draft', 'pending', req.auth.email, Date.now(),
+          r.doj || null, r.qualification || null, r.experience || null, r.emergencyContact || null, r.vendorCode || null, r.aadhaarLast4 || null);
       created++;
     } catch (e) { failures.push({ rowNumber: r.rowNumber, name: r.name, mobile: r.mobile, error: e.message }); }
   }
@@ -465,11 +510,18 @@ router.post('/:id/approve', requirePermission('workers.approve'), (req, res) => 
   if (w.face_check_status !== 'clear' && !faceReviewNote) {
     return res.status(400).json({ error: `Face check needs HR review (${w.face_check_note || 'not run'}) — compare the photos and add a note`, needsFaceReview: true });
   }
+  // Bulk-import Aadhaar cross-check (see routes/kyc.js) flagged a mismatch between what
+  // HR entered at import and what DigiLocker actually verified — same maker-reviews-the-
+  // flag pattern as the face check above, not a hard block (could be an HR typo).
+  const aadhaarMismatchNote = ((req.body || {}).aadhaarMismatchNote || '').trim();
+  if (w.aadhaar_last4_mismatch && !aadhaarMismatchNote) {
+    return res.status(400).json({ error: `Aadhaar last-4 entered at import doesn't match the DigiLocker-verified Aadhaar — review and add a note before approving`, needsAadhaarReview: true });
+  }
   const mgr = readManager(req.body || {});
   if (mgr.error) return res.status(400).json({ error: mgr.error });
   db.prepare("UPDATE workers SET status = 'approved', send_back_reason = NULL, reporting_manager_name = ?, reporting_manager_email = ? WHERE id = ?")
     .run(mgr.name, mgr.email, w.id);
-  addAudit(req.auth.email, 'approve_registration', `Approved ${w.name} (${w.id}), reporting manager ${mgr.name} <${mgr.email}>${faceReviewNote ? `; face reviewed by HR: ${faceReviewNote}` : ''}`);
+  addAudit(req.auth.email, 'approve_registration', `Approved ${w.name} (${w.id}), reporting manager ${mgr.name} <${mgr.email}>${faceReviewNote ? `; face reviewed by HR: ${faceReviewNote}` : ''}${aadhaarMismatchNote ? `; Aadhaar last-4 mismatch reviewed by HR: ${aadhaarMismatchNote}` : ''}`);
   notifyWorker(w, 'TSG Workforce: your registration is approved. You can now punch in at your site.');
   res.json(getWorker(w.id));
 });

@@ -267,6 +267,13 @@ addColumnIfMissing('vendors', 'contact_aadhaar_qr_at', 'INTEGER');
 addColumnIfMissing('workers', 'reference_photo_url', 'TEXT');
 addColumnIfMissing('workers', 'reference_photo_set_by', 'TEXT');
 addColumnIfMissing('workers', 'reference_photo_set_at', 'INTEGER');
+// Bulk-import (Excel) cross-check: HR may enter the last 4 Aadhaar digits from the
+// worker's paperwork at import time (never the full number — same no-full-number rule as
+// everywhere else in this app). Compared against the real DigiLocker-verified Aadhaar once
+// the worker completes KYC on their own phone; a mismatch doesn't block the worker (could
+// just be an HR typo) but is flagged for HR to resolve before approving.
+addColumnIfMissing('workers', 'expected_aadhaar_last4', 'TEXT');
+addColumnIfMissing('workers', 'aadhaar_last4_mismatch', 'INTEGER NOT NULL DEFAULT 0');
 
 function addAudit(user, action, detail) {
   db.prepare('INSERT INTO audit_log (id, ts, user, action, detail) VALUES (?,?,?,?,?)')
