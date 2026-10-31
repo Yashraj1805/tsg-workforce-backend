@@ -1301,6 +1301,8 @@ async function renderVendorsTab(body) {
 }
 function openVendorForm(v, onChange) {
   const overlay = document.createElement('div'); overlay.className = 'overlay';
+  let dlRequestId = null; // set once a DigiLocker link is created; submitted on save for a not-yet-created vendor
+  const panVerified = !!(v && v.contact_pan_verified);
   overlay.innerHTML = `<div class="drawer"><button class="close">&times;</button>
     <h2>${v ? 'Edit vendor' : 'Add vendor'}</h2>
     <form id="vForm">
@@ -1308,43 +1310,68 @@ function openVendorForm(v, onChange) {
       <div class="field"><label>GSTIN</label><input id="v_gstin" value="${esc(v ? v.gstin || '' : '')}" /></div>
       <div class="field"><label>PAN</label><input id="v_pan" value="${esc(v ? v.pan || '' : '')}" /></div>
       <div class="field"><label>Contact person</label><input id="v_contact" value="${esc(v ? v.contact_person || '' : '')}" /></div>
-      ${v ? `<div class="field">
-        <label>Contact person PAN ${v.contact_pan_verified ? '<span class="badge approved" style="margin-left:6px">Verified</span>' : ''}</label>
-        <div style="display:flex;gap:8px">
-          <input id="v_contactPan" value="${esc(v.contact_pan_number || '')}" placeholder="ABCDE1234F" style="flex:1" />
-          <button type="button" class="btn secondary small" id="v_verifyPanBtn">Verify</button>
+      <div class="field">
+        <label>Contact person KYC ${panVerified ? '<span class="badge approved" style="margin-left:6px">PAN verified</span>' : ''}</label>
+        <div id="v_kycStatus" class="hint" style="margin-bottom:8px">${panVerified ? `PAN ${esc(v.contact_pan_number || '')} — ${esc(v.contact_pan_name || '')}` : 'Not verified yet.'}</div>
+        <div id="v_dlArea">
+          <button type="button" class="btn secondary small" id="v_dlStart">${panVerified ? 'Re-verify via DigiLocker' : 'Send DigiLocker verification link'}</button>
         </div>
-        <div id="v_panResult" class="hint" style="margin-top:6px">${v.contact_pan_verified ? `Verified against Setu: ${esc(v.contact_pan_name || '')}` : 'Not verified yet - type the PAN and tap Verify (checked against Setu, no photo needed).'}</div>
-      </div>` : ''}
+      </div>
       <div class="field"><label>Phone</label><input id="v_phone" value="${esc(v ? v.phone || '' : '')}" /></div>
       <div class="field"><label>Contract start</label><input type="date" id="v_start" value="${esc(v ? v.contract_start || '' : '')}" /></div>
       <div class="field"><label>Contract end</label><input type="date" id="v_end" value="${esc(v ? v.contract_end || '' : '')}" /></div>
       <div class="field"><label>Status</label><select id="v_status"><option value="active" ${v && v.status === 'active' ? 'selected' : ''}>Active</option><option value="inactive" ${v && v.status === 'inactive' ? 'selected' : ''}>Inactive</option></select></div>
       <button class="btn primary block" type="submit">Save</button>
     </form>
-    <p class="hint">Contact person Aadhaar verification still needs the phone app (DigiLocker requires a redirect flow, not just typing a number) - PAN is the one check that works right here.</p>
+    <p class="hint">Contact person KYC (Aadhaar + PAN) goes through the same DigiLocker consent as worker onboarding — they open the link, confirm with their Aadhaar OTP, and the PAN comes back auto-verified. No photo or typed PAN needed.</p>
   </div>`;
   document.body.appendChild(overlay);
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelector('.close').onclick = () => overlay.remove();
-  const verifyBtn = overlay.querySelector('#v_verifyPanBtn');
-  if (verifyBtn) verifyBtn.onclick = async () => {
-    const pan = document.getElementById('v_contactPan').value.trim().toUpperCase();
-    if (!pan) { toast('Enter a PAN first', 'error'); return; }
-    verifyBtn.disabled = true; verifyBtn.textContent = 'Checking…';
+
+  overlay.querySelector('#v_dlStart').onclick = async () => {
+    const startBtn = overlay.querySelector('#v_dlStart');
+    startBtn.disabled = true; startBtn.textContent = 'Generating link…';
     try {
-      const r = await api('/vendor-kyc/pan-verify', { method: 'POST', body: { pan, vendorId: v.id } });
-      document.getElementById('v_panResult').textContent = `Verified against Setu: ${r.fullName || '—'}`;
-      toast(r.warning || 'PAN verified', r.warning ? 'error' : 'success');
+      const r = await api('/vendor-kyc/digilocker/init', { method: 'POST', body: v ? { vendorId: v.id } : {} });
+      dlRequestId = r.id;
+      document.getElementById('v_dlArea').innerHTML = `
+        <div class="field" style="margin-bottom:8px"><input id="v_dlLink" value="${esc(r.url)}" readonly /></div>
+        <div class="actions-row">
+          <button type="button" class="btn secondary small" id="v_dlCopy">Copy link</button>
+          <button type="button" class="btn primary small" id="v_dlCheck">Check status</button>
+        </div>
+        <p class="hint" style="margin-top:6px">Send this link to the contact person (WhatsApp/SMS) — they confirm with their Aadhaar OTP, then come back here and tap "Check status".</p>`;
+      document.getElementById('v_dlCopy').onclick = async () => {
+        try { await navigator.clipboard.writeText(r.url); toast('Link copied', 'success'); }
+        catch (e) { toast('Could not copy — select and copy manually', 'error'); }
+      };
+      document.getElementById('v_dlCheck').onclick = async () => {
+        const checkBtn = document.getElementById('v_dlCheck');
+        checkBtn.disabled = true; checkBtn.textContent = 'Checking…';
+        try {
+          const res = await api(`/vendor-kyc/digilocker/${dlRequestId}/complete`);
+          const c = res.contact;
+          document.getElementById('v_kycStatus').innerHTML = c.panNumber
+            ? `PAN verified: ${esc(c.panNumber)} — ${esc(c.panName || '')}${c.nameMismatch ? ` <span style="color:var(--bad)">(${esc(c.nameMismatch)})</span>` : ''}`
+            : `Aadhaar verified (${esc(c.aadhaarMasked || '')})${c.panMasked ? ' — PAN came back masked, ask the contact person to try again' : ' — no PAN returned'}`;
+          toast(res.applied ? 'Saved to vendor' : 'Verified — will be saved when you save this vendor', 'success');
+        } catch (e) {
+          if (e.message && /not finished/i.test(e.message)) toast('Not completed yet — ask the contact person to finish on their end, then check again', 'error');
+          else toast(e.message, 'error');
+        } finally { checkBtn.disabled = false; checkBtn.textContent = 'Check status'; }
+      };
     } catch (e) { toast(e.message, 'error'); }
-    finally { verifyBtn.disabled = false; verifyBtn.textContent = 'Verify'; }
+    finally { startBtn.disabled = false; startBtn.textContent = panVerified ? 'Re-verify via DigiLocker' : 'Send DigiLocker verification link'; }
   };
+
   document.getElementById('vForm').onsubmit = async (e) => {
     e.preventDefault();
     const body = { name: document.getElementById('v_name').value, gstin: document.getElementById('v_gstin').value || undefined,
       pan: document.getElementById('v_pan').value || undefined, contactPerson: document.getElementById('v_contact').value || undefined,
       phone: document.getElementById('v_phone').value || undefined, contractStart: document.getElementById('v_start').value || undefined,
-      contractEnd: document.getElementById('v_end').value || undefined, status: document.getElementById('v_status').value };
+      contractEnd: document.getElementById('v_end').value || undefined, status: document.getElementById('v_status').value,
+      contactDigilockerRequestId: dlRequestId || undefined };
     try {
       if (v) await api(`/vendors/${v.id}`, { method: 'PUT', body }); else await api('/vendors', { method: 'POST', body });
       toast('Saved', 'success'); overlay.remove(); onChange && onChange();
