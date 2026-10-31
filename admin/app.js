@@ -434,10 +434,19 @@ async function openWorkerDrawer(id, onChange) {
     const w = await api(`/workers/${id}`);
     const canApprove = state.permissions.includes('workers.approve');
     const canManage = state.permissions.includes('workers.manage');
+    const docs = [
+      { label: 'Photo', url: w.photo_data_url },
+      { label: 'Aadhaar photo', url: w.aadhaar_photo_url },
+      { label: 'Reference photo', url: w.reference_photo_url },
+      { label: 'PAN card', url: w.pan_photo_data_url },
+      { label: 'Bank passbook', url: w.bank_passbook_data_url },
+    ].filter(d => d.url);
+    const docsHtml = docs.length ? `<div class="doc-grid">${docs.map(d => `<a class="doc-thumb" href="${esc(d.url)}" target="_blank" rel="noopener" title="Open full size"><img src="${esc(d.url)}" alt="${esc(d.label)}" /><span class="doc-label">${esc(d.label)}</span></a>`).join('')}</div>` : '';
     overlay.querySelector('.drawer').innerHTML = `
       <button class="close">&times;</button>
       <h2 style="margin-bottom:6px">${esc(w.name || 'Worker')}</h2>
       ${badge(w.status)}
+      ${docsHtml}
       <dl class="kv">
         <dt>Mobile</dt><dd>${esc(w.mobile || '—')}</dd>
         <dt>Vendor</dt><dd>${esc(w.vendor ? w.vendor.name : '—')}</dd>
@@ -479,13 +488,13 @@ async function openWorkerDrawer(id, onChange) {
     const sb = overlay.querySelector('#actSendBack'); if (sb) sb.onclick = () => openReasonPrompt('Reason to send back to the worker', (reason) => act('send-back', { reason }));
     const rj = overlay.querySelector('#actReject'); if (rj) rj.onclick = () => openReasonPrompt('Reason for rejecting (the worker is told this)', (reason) => act('reject', { reason }));
     const ex = overlay.querySelector('#actExit'); if (ex) ex.onclick = () => openFormDialog(`Mark ${w.name || 'worker'} as exited`, [{ id: 'reason', label: 'Reason', type: 'text', required: true }], async (v) => {
-      if (!confirm(`Mark ${w.name} as exited today?`)) return;
+      if (!await openConfirmDialog(`Mark ${w.name} as exited today?`, { danger: true, confirmLabel: 'Mark exited' })) return;
       await act('exit', { exitDate: new Date().toISOString().slice(0, 10), reason: v.reason });
     }, 'Mark exited');
     const rd = overlay.querySelector('#actResetDevice'); if (rd) rd.onclick = () => openReasonPrompt('Reason for resetting this worker\'s bound device (lets them bind a new phone)', (reason) => act('reset-device', { reason }));
     const tr = overlay.querySelector('#actTransfer'); if (tr) tr.onclick = () => openTransferForm(id, w, () => { overlay.remove(); onChange && onChange(); });
     const del = overlay.querySelector('#actDelete'); if (del) del.onclick = () => openFormDialog(`Delete ${esc(w.name || 'this record')}?`, [{ id: 'reason', label: 'Reason (optional)', type: 'text' }], async (v) => {
-      if (!confirm(`Permanently delete ${w.name || 'this record'}? This cannot be undone.`)) return;
+      if (!await openConfirmDialog(`Permanently delete ${w.name || 'this record'}? This cannot be undone.`, { danger: true, confirmLabel: 'Delete permanently' })) return;
       await api(`/workers/${id}`, { method: 'DELETE', body: { reason: v.reason } });
       toast('Deleted', 'success'); overlay.remove(); onChange && onChange();
     }, 'Delete permanently');
@@ -596,7 +605,7 @@ async function renderVendorBill(content) {
         lockBtn.onclick = async () => {
           try {
             if (data.locked) { openReasonPrompt('Reason to unlock', async (reason) => { await api(`/reports/attendance-lock/${m}`, { method: 'DELETE', body: { reason } }); load(); }); return; }
-            if (!confirm(`Lock attendance for ${m}? No more corrections after this.`)) return;
+            if (!await openConfirmDialog(`Lock attendance for ${m}? No more corrections after this.`, { confirmLabel: 'Lock month' })) return;
             await api('/reports/attendance-lock', { method: 'POST', body: { month: m } });
             load();
           } catch (e) { toast(e.message, 'error'); }
@@ -646,8 +655,8 @@ async function renderUsers(content) {
         <td><button class="btn secondary small" data-reset="${esc(u.id)}">Reset password</button></td>
       </tr>`).join('') || emptyRow(5, 'No admin users yet');
       document.querySelectorAll('#usersBody button[data-reset]').forEach(b => b.onclick = async () => {
-        if (!confirm('Reset this user\'s password to a new temporary one?')) return;
-        try { const r = await api(`/admin-users/${b.dataset.reset}/reset-password`, { method: 'POST', body: {} }); alert(`New temporary password: ${r.password}\n\nShare this with the user — it won't be shown again.`); }
+        if (!await openConfirmDialog('Reset this user\'s password to a new temporary one?', { confirmLabel: 'Reset password' })) return;
+        try { const r = await api(`/admin-users/${b.dataset.reset}/reset-password`, { method: 'POST', body: {} }); openSecretDialog('New temporary password', r.password, 'Share this with the user — it won\'t be shown again.'); }
         catch (e) { toast(e.message, 'error'); }
       });
     } catch (e) { document.getElementById('usersBody').innerHTML = emptyRow(5, e.message); }
@@ -915,7 +924,7 @@ async function renderExceptions(content) {
         ${canConfirmRef ? `<td>${p.selfie_data_url ? `<button class="btn secondary small" data-w="${esc(p.worker_id)}" data-p="${esc(p.id)}">Set as reference photo</button>` : ''}</td>` : ''}
       </tr>`).join('') || emptyRow(6, 'No blocked attempts in the last 14 days');
       document.querySelectorAll('#excBody button[data-w]').forEach(b => b.onclick = async () => {
-        if (!confirm('Confirm this selfie is genuinely this worker, and use it as their reference photo for future face-match checks?')) return;
+        if (!await openConfirmDialog('Confirm this selfie is genuinely this worker, and use it as their reference photo for future face-match checks?', { confirmLabel: 'Confirm and set' })) return;
         try { await api(`/workers/${b.dataset.w}/reference-photo`, { method: 'POST', body: { punchId: b.dataset.p } }); toast('Reference photo updated', 'success'); }
         catch (e) { toast(e.message, 'error'); }
       });
@@ -1039,7 +1048,7 @@ async function renderRequests(content) {
         const id = b.dataset.id, act = b.dataset.act;
         try {
           if (act === 'accept') await api(`/worker-requests/${id}/accept`, { method: 'POST', body: {} });
-          else if (act === 'complete') { if (!confirm('Carry out this request now?')) return; await api(`/worker-requests/${id}/complete`, { method: 'POST', body: {} }); }
+          else if (act === 'complete') { if (!await openConfirmDialog('Carry out this request now?', { confirmLabel: 'Carry out' })) return; await api(`/worker-requests/${id}/complete`, { method: 'POST', body: {} }); }
           else if (act === 'reject') { openReasonPrompt('Reason for rejecting', async (reason) => { await api(`/worker-requests/${id}/reject`, { method: 'POST', body: { reason } }); toast('Updated', 'success'); load(); }); return; }
           toast('Updated', 'success'); load();
         } catch (e) { toast(e.message, 'error'); }
@@ -1086,6 +1095,50 @@ function openFormDialog(title, fields, onSubmit, submitLabel) {
 // A single required-text-field dialog - thin wrapper over openFormDialog.
 function openReasonPrompt(label, onSubmit) {
   openFormDialog(label, [{ id: 'reason', label: 'Reason', type: 'text', required: true }], (v) => onSubmit(v.reason), 'Submit');
+}
+
+// Replaces window.confirm() with something styled like the rest of the app. Resolves
+// true/false, so call sites just swap `if (!confirm(msg))` for `if (!await openConfirmDialog(msg))`.
+function openConfirmDialog(message, opts = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div'); overlay.className = 'overlay center';
+    overlay.innerHTML = `<div class="modal">
+      <p style="margin:0 0 18px;font-size:14.5px;line-height:1.5">${esc(message)}</p>
+      <div class="actions-row" style="justify-content:flex-end">
+        <button class="btn secondary small" id="cfNo">Cancel</button>
+        <button class="btn ${opts.danger ? 'danger' : 'primary'} small" id="cfYes">${esc(opts.confirmLabel || 'Confirm')}</button>
+      </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    const done = (v) => { overlay.remove(); resolve(v); };
+    overlay.onclick = (e) => { if (e.target === overlay) done(false); };
+    overlay.querySelector('#cfNo').onclick = () => done(false);
+    overlay.querySelector('#cfYes').onclick = () => done(true);
+    overlay.querySelector('#cfYes').focus();
+  });
+}
+
+// Replaces window.alert() for a one-time secret (temp password, pairing code) — shown in
+// a monospace box with a real Copy button, since a native alert's text often can't be
+// reliably selected, and this value "won't be shown again."
+function openSecretDialog(title, secret, note) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay center';
+  overlay.innerHTML = `<div class="modal">
+    <h3 style="margin:0 0 12px">${esc(title)}</h3>
+    <div class="secret-box">${esc(secret)}</div>
+    ${note ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">${esc(note)}</p>` : ''}
+    <div class="actions-row" style="justify-content:flex-end;margin-top:16px">
+      <button class="btn secondary small" id="scCopy">Copy</button>
+      <button class="btn primary small" id="scClose">Done</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelector('#scClose').onclick = () => overlay.remove();
+  overlay.querySelector('#scCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText(secret); toast('Copied', 'success'); }
+    catch (e) { toast('Could not copy — select the text manually', 'error'); }
+  };
 }
 
 async function openRaiseRequestForm(onDone) {
@@ -1391,7 +1444,7 @@ async function renderKiosks(content) {
         <td><button class="btn secondary small" data-code="${esc(k.id)}">New code</button> <button class="btn ${k.status === 'active' ? 'danger' : 'secondary'} small" data-toggle="${esc(k.id)}" data-next="${k.status === 'active' ? 'retired' : 'active'}">${k.status === 'active' ? 'Retire' : 'Reactivate'}</button></td>
       </tr>`).join('') || emptyRow(5, 'No gate tablets yet');
       document.querySelectorAll('#kList button[data-code]').forEach(b => b.onclick = async () => {
-        try { const r = await api(`/kiosks/${b.dataset.code}/new-code`, { method: 'POST', body: {} }); alert(`Pairing code: ${r.pairingCode}\n\nValid for ${r.pairingExpiresInHours} hours. Enter it on the tablet.`); }
+        try { const r = await api(`/kiosks/${b.dataset.code}/new-code`, { method: 'POST', body: {} }); openSecretDialog('Pairing code', r.pairingCode, `Valid for ${r.pairingExpiresInHours} hours. Enter it on the tablet.`); }
         catch (e) { toast(e.message, 'error'); }
       });
       document.querySelectorAll('#kList button[data-toggle]').forEach(b => b.onclick = async () => {
@@ -1407,7 +1460,7 @@ async function renderKiosks(content) {
       { id: 'locationId', label: 'Site', type: 'select', options: locations.map(l => ({ value: l.id, label: l.name })), required: true },
     ], async (v) => {
       const r = await api('/kiosks', { method: 'POST', body: { name: v.name, locationId: v.locationId } });
-      alert(`Pairing code: ${r.pairingCode}\n\nValid for ${r.pairingExpiresInHours} hours. Enter it on the tablet.`);
+      openSecretDialog('Pairing code', r.pairingCode, `Valid for ${r.pairingExpiresInHours} hours. Enter it on the tablet.`);
       load();
     }, 'Create');
   };
