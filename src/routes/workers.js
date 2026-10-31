@@ -342,9 +342,9 @@ router.post('/bulk-import/preview', requirePermission('workers.create_direct'), 
     if (!name) errors.push('Name is missing');
     if (!/^\d{10}$/.test(mobile)) errors.push('Mobile must be a 10-digit number');
     let vendorId = null, locationId = null, jobId = null;
-    if (r.vendor) { const v = vMap.get(String(r.vendor).toLowerCase()); if (!v) errors.push(`Vendor "${r.vendor}" not found`); else vendorId = v.id; }
-    if (r.location) { const l = lMap.get(String(r.location).toLowerCase()); if (!l) errors.push(`Site "${r.location}" not found`); else locationId = l.id; }
-    if (r.job) { const j = jMap.get(String(r.job).toLowerCase()); if (!j) errors.push(`Job "${r.job}" not found — add it in Masters first`); else jobId = j.id; }
+    if (r.vendor) { const v = vMap.get(String(r.vendor).toLowerCase()); if (!v) errors.push(`Vendor "${r.vendor}" not found — add it in Vendors / Sites / Jobs first`); else vendorId = v.id; }
+    if (r.location) { const l = lMap.get(String(r.location).toLowerCase()); if (!l) errors.push(`Site "${r.location}" not found — a new site needs GPS set up in Vendors / Sites / Jobs first, it can't be created from a name alone`); else locationId = l.id; }
+    if (r.job) { const j = jMap.get(String(r.job).toLowerCase()); if (!j) errors.push(`Job "${r.job}" not found — add it in Vendors / Sites / Jobs first`); else jobId = j.id; }
     const doj = parseDojCell(r.doj); if (doj.error) errors.push(doj.error);
     const qualification = matchOption(EDUCATION, r.qualification); if (qualification.error) errors.push(qualification.error);
     const experience = matchOption(EXPERIENCE, r.experience); if (experience.error) errors.push(experience.error);
