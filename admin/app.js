@@ -355,9 +355,11 @@ async function renderDashboard(content) {
 async function renderWorkers(content) {
   let filterOpts = { locations: [], vendors: [], jobs: [] };
   try { filterOpts = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
+  const canBulkImport = state.permissions.includes('workers.create_direct');
   content.innerHTML = `
     <h2>Workers</h2>
     <p class="page-sub">Within your scope</p>
+    ${canBulkImport ? `<div class="actions-row" style="margin-bottom:14px"><button class="btn secondary small" id="bulkImportBtn">Bulk import (Excel)</button></div>` : ''}
     <div class="filter-bar">
       <div class="field"><label>Status</label>
         <select id="statusFilter">
@@ -397,7 +399,75 @@ async function renderWorkers(content) {
   document.getElementById('statusFilter').onchange = load;
   ['locFilter', 'venFilter', 'jobFilter'].forEach(id => { document.getElementById(id).onchange = renderRows; });
   document.getElementById('searchBox').oninput = renderRows;
+  const bulkBtn = document.getElementById('bulkImportBtn');
+  if (bulkBtn) bulkBtn.onclick = () => openBulkImportDrawer(load);
   load();
+}
+
+// Bulk-add many workers from one Excel file: download the template, fill it (name,
+// mobile, vendor, site, job — the same fields the one-by-one "add worker" form takes),
+// upload it back. Two-step like the rest of the app's risky actions: preview shows
+// exactly what will be created/skipped before anything is written, then commit.
+async function openBulkImportDrawer(onChange) {
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  overlay.innerHTML = `<div class="drawer drawer-wide"><button class="close">&times;</button>
+    <h2>Bulk import workers</h2>
+    <p class="page-sub">Name and mobile are required; vendor, site and job are matched by exact name. Each worker still has to verify their own Aadhaar + PAN on their phone — this only fills in the rest.</p>
+    <div class="actions-row" style="margin-bottom:16px">
+      <button type="button" class="btn secondary small" id="biTemplate">Download template (.xlsx)</button>
+      <label class="btn primary small" style="cursor:pointer">Choose file<input type="file" id="biFile" accept=".xlsx" style="display:none" /></label>
+    </div>
+    <div id="biBody"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelector('.close').onclick = () => overlay.remove();
+
+  document.getElementById('biTemplate').onclick = async () => {
+    try { downloadBlob(await apiBlob('/workers/bulk-import/template.xlsx'), 'worker-bulk-import-template.xlsx'); }
+    catch (e) { toast(e.message, 'error'); }
+  };
+
+  let previewRows = [];
+  document.getElementById('biFile').onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const body = document.getElementById('biBody');
+    body.innerHTML = '<div class="empty">Reading file…</div>';
+    try {
+      const fileBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+        reader.onerror = () => reject(new Error('Could not read the file'));
+        reader.readAsDataURL(file);
+      });
+      const r = await api('/workers/bulk-import/preview', { method: 'POST', body: { fileBase64 } });
+      previewRows = r.rows;
+      body.innerHTML = `
+        <div class="stat-row" style="margin-bottom:14px">
+          ${statCard(r.counts.ok, 'Ready to import', 'users', 'accent')}
+          ${statCard(r.counts.duplicate, 'Already registered', 'alert', 'warn')}
+          ${statCard(r.counts.error, 'Need fixing', 'alert', 'bad')}
+        </div>
+        <div class="table-wrap"><table class="data"><thead><tr><th>Row</th><th>Name</th><th>Mobile</th><th>Vendor</th><th>Site</th><th>Job</th><th>Status</th></tr></thead>
+        <tbody>${r.rows.map(row => `<tr><td>${row.rowNumber}</td><td>${esc(row.name || '—')}</td><td>${esc(row.mobile || '—')}</td><td>${esc(row.vendor || '—')}</td><td>${esc(row.location || '—')}</td><td>${esc(row.job || '—')}</td>
+          <td>${row.status === 'ok' ? badge('approved') : row.status === 'duplicate' ? badge('pending') : badge('rejected')}${row.errors.length ? `<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(row.errors.join('; '))}</div>` : ''}</td></tr>`).join('')}</tbody></table></div>
+        <div class="actions-row" style="margin-top:16px">
+          <button type="button" class="btn primary" id="biCommit" ${r.counts.ok ? '' : 'disabled'}>Import ${r.counts.ok} worker${r.counts.ok === 1 ? '' : 's'}</button>
+        </div>`;
+      const commitBtn = document.getElementById('biCommit');
+      if (commitBtn) commitBtn.onclick = async () => {
+        const okRows = previewRows.filter(row => row.status === 'ok');
+        if (!await openConfirmDialog(`Import ${okRows.length} worker${okRows.length === 1 ? '' : 's'}? Each one still has to verify Aadhaar + PAN on their own phone before they can punch in.`, { confirmLabel: 'Import' })) return;
+        commitBtn.disabled = true; commitBtn.textContent = 'Importing…';
+        try {
+          const res = await api('/workers/bulk-import/commit', { method: 'POST', body: { rows: okRows } });
+          toast(`${res.created} worker(s) imported${res.failures.length ? `, ${res.failures.length} failed` : ''}`, res.failures.length ? 'error' : 'success');
+          overlay.remove(); onChange && onChange();
+        } catch (err) { toast(err.message, 'error'); commitBtn.disabled = false; commitBtn.textContent = `Import ${okRows.length} worker${okRows.length === 1 ? '' : 's'}`; }
+      };
+    } catch (err) { body.innerHTML = `<div class="error-box">${esc(err.message)}</div>`; }
+  };
 }
 
 // "Who's where" drill-down from the Dashboard's by-location / by-vendor tables — every

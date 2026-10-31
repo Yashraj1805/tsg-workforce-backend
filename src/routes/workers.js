@@ -13,6 +13,8 @@ const gemini = require('../services/geminiClient');
 const { can } = require('../rbac');
 const { checkImages } = require('../services/images');
 const { makeThumb } = require('../services/thumbs');
+const ExcelJS = require('exceljs');
+const reports = require('../services/reports');
 
 // ---- What leaves the server about a worker, by who is asking (data minimisation).
 // Lists: the 192 px thumbnail stands in for the photo, identity-document images and the
@@ -245,6 +247,112 @@ router.post('/', requirePermission('workers.create_direct'), (req, res) => {
     .run(id, mobile, name.trim(), job_id, designation, vendor_id, location_id, 'draft', 'pending', req.auth.email, Date.now());
   addAudit(req.auth.email, 'worker_direct_create', `${name.trim()} (${mobile}) added directly by ${req.user.role}${vendor_id ? `, vendor ${vendorId}` : ''}${location_id ? `, site ${location_id}` : ''}`);
   res.status(201).json(publicWorker(getWorker(id), req.user, { detail: true }));
+});
+
+// ---- Bulk import (Excel) — the bulk version of the direct-add above: HR fills a
+// spreadsheet with many workers' basic details (name, mobile, vendor, site, job), each
+// still only reaches 'draft' status and still has to clear Aadhaar+PAN themselves on
+// their own phone — this only saves the one-by-one retyping, never the KYC step.
+// Two-step (preview, then commit) so HR sees exactly what will be created — which rows
+// are new, which mobiles already exist, which names/sites don't match anything — before
+// anything is written.
+router.get('/bulk-import/template.xlsx', requirePermission('workers.create_direct'), async (req, res) => {
+  const buf = await reports.toXlsx([{
+    name: 'Workers',
+    columns: [
+      { header: 'Name', key: 'name', width: 24 },
+      { header: 'Mobile', key: 'mobile', width: 14 },
+      { header: 'Vendor', key: 'vendor', width: 24 },
+      { header: 'Site', key: 'site', width: 24 },
+      { header: 'Job / Department', key: 'job', width: 22 },
+    ],
+    rows: [
+      { name: 'Ramesh Kumar (example — delete this row)', mobile: '9876543210', vendor: 'Exact vendor name, as in Vendors / Sites / Jobs', site: 'Exact site name, as in Vendors / Sites / Jobs', job: 'Exact job name, as in Vendors / Sites / Jobs' },
+    ],
+  }]);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="worker-bulk-import-template.xlsx"');
+  res.send(buf);
+});
+
+async function parseBulkExcel(fileBase64) {
+  const buf = Buffer.from(fileBase64, 'base64');
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  const sheet = wb.worksheets[0];
+  if (!sheet) throw new Error('No sheet found in the file');
+  const rows = [];
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return; // header row
+    const cell = (c) => { const v = row.getCell(c).value; return v == null ? '' : String(v).trim(); };
+    const name = cell(1), mobile = cell(2), vendor = cell(3), location = cell(4), job = cell(5);
+    if (!name && !mobile && !vendor && !location && !job) return; // fully blank row
+    rows.push({ rowNumber, name, mobile, vendor, location, job });
+  });
+  return rows;
+}
+
+router.post('/bulk-import/preview', requirePermission('workers.create_direct'), async (req, res) => {
+  const { fileBase64 } = req.body || {};
+  if (!fileBase64) return res.status(400).json({ error: 'fileBase64 is required' });
+  let rawRows;
+  try { rawRows = await parseBulkExcel(fileBase64); }
+  catch (e) { return res.status(400).json({ error: `Could not read that file — use the template (.xlsx) and don't change the header row (${e.message})` }); }
+  if (!rawRows.length) return res.status(400).json({ error: 'No data rows found — fill at least one row below the header' });
+  if (rawRows.length > 500) return res.status(400).json({ error: 'At most 500 rows at a time' });
+
+  const byName = (list) => { const m = new Map(); list.forEach(x => m.set(x.name.toLowerCase(), x)); return m; };
+  const vMap = byName(db.prepare('SELECT id, name FROM vendors').all());
+  const lMap = byName(db.prepare('SELECT id, name FROM locations').all());
+  const jMap = byName(db.prepare('SELECT id, name FROM jobs WHERE active = 1').all());
+
+  const seenMobiles = new Set();
+  const rows = rawRows.map(r => {
+    const errors = [];
+    if (!r.name) errors.push('Name is missing');
+    if (!/^\d{10}$/.test(r.mobile)) errors.push('Mobile must be a 10-digit number');
+    let vendorId = null, locationId = null, jobId = null;
+    if (r.vendor) { const v = vMap.get(r.vendor.toLowerCase()); if (!v) errors.push(`Vendor "${r.vendor}" not found`); else vendorId = v.id; }
+    if (r.location) { const l = lMap.get(r.location.toLowerCase()); if (!l) errors.push(`Site "${r.location}" not found`); else locationId = l.id; }
+    if (r.job) { const j = jMap.get(r.job.toLowerCase()); if (!j) errors.push(`Job "${r.job}" not found — add it in Masters first`); else jobId = j.id; }
+    let status = 'ok';
+    if (r.mobile && /^\d{10}$/.test(r.mobile)) {
+      const existing = db.prepare('SELECT status, blacklisted FROM workers WHERE mobile = ?').get(r.mobile);
+      if (existing) { status = 'duplicate'; errors.push(existing.blacklisted ? 'This mobile is blacklisted' : `Already registered (status: ${existing.status})`); }
+      else if (seenMobiles.has(r.mobile)) { status = 'error'; errors.push('Duplicate mobile within this file'); }
+      seenMobiles.add(r.mobile);
+    }
+    if (errors.length && status === 'ok') status = 'error';
+    return { rowNumber: r.rowNumber, name: r.name, mobile: r.mobile, vendor: r.vendor, location: r.location, job: r.job, vendorId, locationId, jobId, status, errors };
+  });
+  res.json({ rows, counts: { total: rows.length, ok: rows.filter(r => r.status === 'ok').length, duplicate: rows.filter(r => r.status === 'duplicate').length, error: rows.filter(r => r.status === 'error').length } });
+});
+
+router.post('/bulk-import/commit', requirePermission('workers.create_direct'), (req, res) => {
+  const rows = (req.body || {}).rows;
+  if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ error: 'rows is required' });
+  if (rows.length > 500) return res.status(400).json({ error: 'At most 500 rows at a time' });
+  const scope = ROLE_SCOPE[req.user.role];
+  let created = 0;
+  const failures = [];
+  for (const r of rows) {
+    try {
+      if (!/^\d{10}$/.test(r.mobile || '')) throw new Error('Invalid mobile');
+      if (!(r.name || '').trim()) throw new Error('Name is required');
+      if (db.prepare('SELECT 1 FROM workers WHERE mobile = ?').get(r.mobile)) throw new Error('Already registered');
+      const location_id = scope === 'location' ? (req.user.location_id || null) : (r.locationId || null);
+      let job_id = null, designation = null;
+      if (r.jobId) { const job = db.prepare('SELECT * FROM jobs WHERE id = ? AND active = 1').get(r.jobId); if (job) { job_id = job.id; designation = job.name; } }
+      const vendor_id = r.vendorId && db.prepare('SELECT 1 FROM vendors WHERE id = ?').get(r.vendorId) ? r.vendorId : null;
+      const id = crypto.randomUUID();
+      db.prepare(`INSERT INTO workers (id, mobile, name, job_id, designation, vendor_id, location_id, status, kyc_status, registered_by, created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(id, r.mobile, r.name.trim(), job_id, designation, vendor_id, location_id, 'draft', 'pending', req.auth.email, Date.now());
+      created++;
+    } catch (e) { failures.push({ rowNumber: r.rowNumber, name: r.name, mobile: r.mobile, error: e.message }); }
+  }
+  addAudit(req.auth.email, 'worker_bulk_import', `${created} worker(s) added via bulk Excel import${failures.length ? `, ${failures.length} failed` : ''}`);
+  res.json({ created, failures });
 });
 
 // ---- HR: review and manage workers ----
