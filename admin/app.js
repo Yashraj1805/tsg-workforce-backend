@@ -170,7 +170,7 @@ function svgIcon(key) { return `<svg class="nav-icon" width="17" height="17" vie
 const NAV = [
   { key: 'dashboard', label: 'Dashboard', perms: ['reports.read'], icon: 'dashboard' },
   { key: 'gate-check', label: 'Gate Check', perms: ['workers.gatecheck'], icon: 'search' },
-  { key: 'workers', label: 'Workers', perms: ['workers.read'], icon: 'users' },
+  { key: 'workers', label: 'Workers', anyPerms: ['workers.read', 'workers.create_direct'], icon: 'users' },
   { key: 'attendance', label: 'Attendance', perms: ['workers.read', 'punches.read'], icon: 'calendar' },
   { key: 'exceptions', label: 'Exceptions', perms: ['punches.read'], icon: 'alert' },
   { key: 'timeguard', label: 'TimeGuard', perms: ['workers.read', 'punches.read'], icon: 'shield' },
@@ -185,7 +185,7 @@ const NAV = [
   { key: 'audit', label: 'Audit Log', perms: ['audit.read'], icon: 'list' },
   { key: 'users', label: 'Admin Users', perms: ['users.manage'], icon: 'settings' },
 ];
-function navVisible(n) { return n.perms.every(p => state.permissions.includes(p)); }
+function navVisible(n) { return n.anyPerms ? n.anyPerms.some(p => state.permissions.includes(p)) : n.perms.every(p => state.permissions.includes(p)); }
 function defaultRoute() { const first = NAV.find(navVisible); return first ? first.key : 'dashboard'; }
 
 function renderShell() {
@@ -353,9 +353,21 @@ async function renderDashboard(content) {
 
 // ---- Workers ----
 async function renderWorkers(content) {
+  const canBulkImport = state.permissions.includes('workers.create_direct');
+  // System Admin has workers.create_direct (so they can set up/onboard people in bulk)
+  // but deliberately not workers.read (no ongoing access to worker data) - so they get
+  // only the bulk-import tool here, never the live roster/table.
+  if (!state.permissions.includes('workers.read')) {
+    content.innerHTML = `
+      <h2>Workers</h2>
+      <p class="page-sub">Your role sets up worker records but doesn't see the ongoing roster</p>
+      ${canBulkImport ? `<div class="actions-row" style="margin-bottom:14px"><button class="btn primary small" id="bulkImportBtn">Bulk import (Excel)</button></div>` : '<div class="empty">Nothing to do here</div>'}`;
+    const bulkBtn0 = document.getElementById('bulkImportBtn');
+    if (bulkBtn0) bulkBtn0.onclick = () => openBulkImportDrawer(null);
+    return;
+  }
   let filterOpts = { locations: [], vendors: [], jobs: [] };
   try { filterOpts = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
-  const canBulkImport = state.permissions.includes('workers.create_direct');
   content.innerHTML = `
     <h2>Workers</h2>
     <p class="page-sub">Within your scope</p>
