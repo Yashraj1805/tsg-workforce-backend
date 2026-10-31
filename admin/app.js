@@ -161,6 +161,8 @@ const ICON_PATHS = {
   camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
   mail: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
   list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  mapPin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
+  briefcase: '<rect width="20" height="14" x="2" y="7" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 function svgIcon(key) { return `<svg class="nav-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[key] || ''}</svg>`; }
@@ -241,62 +243,112 @@ function renderRoute(key) {
   content.innerHTML = '<div class="empty">Not found</div>';
 }
 
-function statCard(n, label) { return `<div class="stat-card"><div class="n">${n}</div><div class="l">${esc(label)}</div></div>`; }
+function statCard(n, label, icon, variant) {
+  return `<div class="stat-card${variant ? ' v-' + variant : ''}">
+    ${icon ? `<div class="stat-icon">${svgIcon(icon)}</div>` : ''}
+    <div class="stat-body"><div class="n">${n}</div><div class="l">${esc(label)}</div></div>
+  </div>`;
+}
 function emptyRow(cols, msg) { return `<tr><td colspan="${cols}" class="empty">${esc(msg || 'No data')}</td></tr>`; }
 function badge(status) { return `<span class="badge ${esc(status || '')}">${esc((status || '—').replace(/_/g, ' '))}</span>`; }
 
+// A nested magnitude bar: the neutral segment is `total` against `max`, the accent
+// segment layered on top is `active` against the same `max` — so "how big is this
+// vendor/location" and "how much of it is active" read off one shared scale.
+function barRow(kind, label, r, max, clickable) {
+  const pct = (n) => Math.max(0, Math.min(100, Math.round(n / max * 100)));
+  return `<div class="bar-row${clickable ? ' clickable' : ''}"${clickable ? ` tabindex="0" role="button" data-kind="${esc(kind)}" data-value="${esc(label)}"` : ''}>
+    <div class="bar-row-top">
+      <span class="bar-row-label">${esc(label)}</span>
+      <span class="bar-row-nums">${r.total != null ? `<b>${r.total}</b> total · ` : ''}${r.active} active${r.punchedIn != null ? ` · ${r.punchedIn} in / ${r.punchedOut} out` : ''}</span>
+    </div>
+    <div class="bar-track">${r.total != null ? `<div class="bar-fill" style="width:${pct(r.total)}%"></div>` : ''}<div class="bar-fill-active" style="width:${pct(r.active)}%"></div></div>
+  </div>`;
+}
+
 // ---- Dashboard ----
 async function renderDashboard(content) {
-  try {
-    const dash = await api('/reports/dashboard');
-    content.innerHTML = `
-      <h2>Dashboard</h2>
-      <p class="page-sub">${esc(dash.date)}</p>
-      <div class="stat-row">
-        ${statCard(dash.active, 'Active workers')}
-        ${statCard(dash.punchedIn, 'Punched in today')}
-        ${statCard(dash.stillIn, 'Still on site')}
-        ${statCard(dash.notPunched, 'Not punched in')}
-        ${statCard(dash.pendingApprovals, 'Pending approvals')}
-        ${statCard(dash.blocked, 'Blocked attempts')}
-      </div>
-      <div class="card">
-        <h3>By location — who's where</h3>
-        <p class="page-sub">Click a location to see the worker list</p>
-        <div class="table-wrap"><table class="data"><thead><tr><th>Location</th><th>Total workers</th><th>Active</th><th>Punched in</th><th>Punched out</th></tr></thead>
-        <tbody>${dash.byLocation.map(r => `<tr class="clickable" tabindex="0" role="button" data-kind="location" data-value="${esc(r.location)}"><td>${esc(r.location)}</td><td>${r.total}</td><td>${r.active}</td><td>${r.punchedIn}</td><td>${r.punchedOut}</td></tr>`).join('') || emptyRow(5)}</tbody></table></div>
-      </div>
-      <div class="card">
-        <h3>By vendor</h3>
-        <p class="page-sub">Total = every status (draft, pending, approved, exited); Active = approved and not exited</p>
-        <div class="table-wrap"><table class="data"><thead><tr><th>Vendor</th><th>Total workers</th><th>Active</th><th>Punched in</th><th>Punched out</th></tr></thead>
-        <tbody>${dash.byVendor.map(r => `<tr class="clickable" tabindex="0" role="button" data-kind="vendor" data-value="${esc(r.vendor)}"><td>${esc(r.vendor)}</td><td>${r.total}</td><td>${r.active}</td><td>${r.punchedIn}</td><td>${r.punchedOut}</td></tr>`).join('') || emptyRow(5)}</tbody></table></div>
-      </div>
-      <div class="card">
-        <h3>By department (vendor-wise)</h3>
-        <p class="page-sub">Active outsourced workers, by job/designation within each vendor</p>
-        <div class="table-wrap"><table class="data"><thead><tr><th>Vendor</th><th>Department</th><th>Active</th></tr></thead>
-        <tbody>${dash.byJob.map(r => `<tr><td>${esc(r.vendor)}</td><td>${esc(r.job)}</td><td>${r.active}</td></tr>`).join('') || emptyRow(3)}</tbody></table></div>
-      </div>
-      <div class="card">
-        <h3>Download reports</h3>
-        <div class="actions-row">
-          <button class="btn secondary small" id="dlAttendance">Attendance (last 30 days) .xlsx</button>
-          <button class="btn secondary small" id="dlMuster">Muster roll (this month) .xlsx</button>
+  let filterOpts = { brands: [], locations: [], vendors: [], jobs: [] };
+  try { filterOpts = await api('/reports/filters'); } catch (e) { /* non-fatal */ }
+  content.innerHTML = `
+    <h2>Dashboard</h2>
+    <p class="page-sub" id="dashDate">Loading…</p>
+    <div class="filter-bar">
+      <div class="field"><label>Brand</label><select id="dBrand"><option value="">All</option>${filterOpts.brands.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join('')}</select></div>
+      <div class="field"><label>Location</label><select id="dLoc"><option value="">All</option>${filterOpts.locations.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Vendor</label><select id="dVen"><option value="">All</option>${filterOpts.vendors.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Job</label><select id="dJob"><option value="">All</option>${filterOpts.jobs.map(j => `<option value="${esc(j.id)}">${esc(j.name)}</option>`).join('')}</select></div>
+    </div>
+    <div id="dashBody"><div class="empty">Loading…</div></div>`;
+  function query() {
+    const p = {};
+    const brand = document.getElementById('dBrand').value; if (brand) p.brand = brand;
+    const locationId = document.getElementById('dLoc').value; if (locationId) p.locationId = locationId;
+    const vendorId = document.getElementById('dVen').value; if (vendorId) p.vendorId = vendorId;
+    const jobId = document.getElementById('dJob').value; if (jobId) p.jobId = jobId;
+    return new URLSearchParams(p).toString();
+  }
+  async function load() {
+    const body = document.getElementById('dashBody');
+    try {
+      const dash = await api('/reports/dashboard' + (query() ? `?${query()}` : ''));
+      document.getElementById('dashDate').textContent = dash.date;
+      const maxLoc = Math.max(1, ...dash.byLocation.map(r => r.total));
+      const maxVen = Math.max(1, ...dash.byVendor.map(r => r.total));
+      const maxJob = Math.max(1, ...dash.byJob.map(r => r.active));
+      const jobsByVendor = {};
+      for (const r of dash.byJob) { (jobsByVendor[r.vendor] = jobsByVendor[r.vendor] || []).push(r); }
+      body.innerHTML = `
+        <p class="stat-group-label">Today</p>
+        <div class="stat-row">
+          ${statCard(dash.active, 'Active workers', 'users')}
+          ${statCard(dash.punchedIn, 'Punched in today', 'calendar', 'accent')}
+          ${statCard(dash.stillIn, 'Still on site', 'clock', 'accent')}
+          ${statCard(dash.notPunched, 'Not punched in', 'alert', 'warn')}
         </div>
-      </div>`;
-    content.querySelectorAll('tr[data-kind]').forEach(tr => bindActivate(tr, () => openWorkforceListDrawer(tr.dataset.kind, tr.dataset.value)));
-    document.getElementById('dlAttendance').onclick = async () => {
-      const to = new Date().toISOString().slice(0, 10);
-      const from = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
-      try { downloadBlob(await apiBlob(`/reports/attendance.xlsx?from=${from}&to=${to}`), `attendance-${from}-to-${to}.xlsx`); }
-      catch (e) { toast(e.message, 'error'); }
-    };
-    document.getElementById('dlMuster').onclick = async () => {
-      try { downloadBlob(await apiBlob('/reports/muster.xlsx'), 'muster-roll.xlsx'); }
-      catch (e) { toast(e.message, 'error'); }
-    };
-  } catch (e) { content.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+        <p class="stat-group-label">Needs attention</p>
+        <div class="stat-row">
+          ${statCard(dash.pendingApprovals, 'Pending approvals', 'file', 'warn')}
+          ${statCard(dash.blocked, 'Blocked attempts', 'shield', 'bad')}
+        </div>
+        <div class="card">
+          <div class="section-head"><div class="sec-icon">${svgIcon('mapPin')}</div><div><h3>By location — who's where</h3><p class="page-sub">Click a location to see the worker list</p></div></div>
+          ${dash.byLocation.map(r => barRow('location', r.location, r, maxLoc, true)).join('') || '<div class="empty">No data</div>'}
+        </div>
+        <div class="card">
+          <div class="section-head"><div class="sec-icon">${svgIcon('building')}</div><div><h3>By vendor</h3><p class="page-sub">Total = every status (draft, pending, approved, exited); active = approved and not exited</p></div></div>
+          ${dash.byVendor.map(r => barRow('vendor', r.vendor, r, maxVen, true)).join('') || '<div class="empty">No data</div>'}
+        </div>
+        <div class="card">
+          <div class="section-head"><div class="sec-icon">${svgIcon('briefcase')}</div><div><h3>By department (vendor-wise)</h3><p class="page-sub">Active outsourced workers, by job/designation within each vendor</p></div></div>
+          ${Object.keys(jobsByVendor).sort().map(v => `
+            <div class="dept-vendor-group">
+              <p class="dept-vendor-name">${esc(v)}</p>
+              ${jobsByVendor[v].map(r => barRow(null, r.job, r, maxJob, false)).join('')}
+            </div>`).join('') || '<div class="empty">No data</div>'}
+        </div>
+        <div class="card">
+          <h3>Download reports</h3>
+          <div class="actions-row">
+            <button class="btn secondary small" id="dlAttendance">Attendance (last 30 days) .xlsx</button>
+            <button class="btn secondary small" id="dlMuster">Muster roll (this month) .xlsx</button>
+          </div>
+        </div>`;
+      body.querySelectorAll('[data-kind]').forEach(el => bindActivate(el, () => openWorkforceListDrawer(el.dataset.kind, el.dataset.value)));
+      document.getElementById('dlAttendance').onclick = async () => {
+        const to = new Date().toISOString().slice(0, 10);
+        const from = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+        try { downloadBlob(await apiBlob(`/reports/attendance.xlsx?from=${from}&to=${to}`), `attendance-${from}-to-${to}.xlsx`); }
+        catch (e) { toast(e.message, 'error'); }
+      };
+      document.getElementById('dlMuster').onclick = async () => {
+        try { downloadBlob(await apiBlob('/reports/muster.xlsx'), 'muster-roll.xlsx'); }
+        catch (e) { toast(e.message, 'error'); }
+      };
+    } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+  }
+  ['dBrand', 'dLoc', 'dVen', 'dJob'].forEach(id => { document.getElementById(id).onchange = load; });
+  load();
 }
 
 // ---- Workers ----
